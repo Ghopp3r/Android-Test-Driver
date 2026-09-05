@@ -368,6 +368,7 @@ static void hwbp_maybe_notify(struct hwbp_tracker *tracker) {
 	nw->signal_no = signal_no ? signal_no : (SIGRTMIN + 1);
 	nw->bp_id = (int)tracker->tracker_id;
 	INIT_WORK(&nw->work, hwbp_notify_worker);
+	LOGI("hwbp: notify queue sig=%d bp_id=%d\n", nw->signal_no, nw->bp_id);
 	queue_work(system_wq, &nw->work);
 }
 
@@ -497,7 +498,11 @@ static void hwbp_notify_worker(struct work_struct *w) {
 	info.si_signo = nw->signal_no;
 	info.si_code = SI_QUEUE;
 	info.si_int = nw->bp_id;
-	send_sig_info(nw->signal_no, &info, task);
+	{
+		int rc = send_sig_info(nw->signal_no, &info, task);
+		LOGI("hwbp: notify deliver sig=%d tgid=%d rc=%d\n",
+		     nw->signal_no, task->tgid, rc);
+	}
 	put_task_struct(task);
 
 	/* Best-effort in_flight clear (tracker may already be gone). */

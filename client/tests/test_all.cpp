@@ -296,13 +296,22 @@ void test_notify() {
 	driver.hwbp.clearAll();
 	std::printf("[BEGIN] S8_notify\n");
 
-	/* Block SIGRTMIN+1 in this thread and drain it via sigtimedwait — that
-	 * avoids the userspace return-from-signal path resuming at the BP addr
-	 * (which was the original re-fire hazard). */
-	const int SIG = SIGRTMIN + 1;
+	/* Pin the signal number explicitly. Bionic's SIGRTMIN macro is offset
+	 * from the kernel's (Bionic reserves the low RT signals for libc-internal
+	 * use), so requesting SIGRTMIN+1 in userspace does NOT equal the
+	 * SIGRTMIN+1 the driver sends. Use raw 34 on both sides. */
+	const int SIG = 34;
 	sigset_t set;
 	sigemptyset(&set);
 	sigaddset(&set, SIG);
+	/* Install a fallback SIGINFO handler so a delivery to any thread — before
+	 * pthread_sigmask propagates or during signal race — cannot terminate the
+	 * process (RT signals default to Term). Then block + drain via
+	 * sigtimedwait for deterministic timing. */
+	struct sigaction sa{};
+	sa.sa_flags = SA_SIGINFO | SA_RESTART;
+	sa.sa_sigaction = sigrt_handler;
+	sigaction(SIG, &sa, nullptr);
 	pthread_sigmask(SIG_BLOCK, &set, nullptr);
 
 	driver.setTarget(getpid());
@@ -310,20 +319,20 @@ void test_notify() {
 	if (!driver.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4, DRV_HWBP_FLAG_NOTIFY)) {
 		FAIL("S8_notify", "install failed errno=%d", errno); return;
 	}
-	if (!driver.hwbp.setNotify(addr, getpid())) {
+	if (!driver.hwbp.setNotify(addr, getpid(), SIG)) {
 		FAIL("S8_notify", "setNotify failed errno=%d", errno);
 		driver.hwbp.remove(addr); return;
 	}
 	probe_fn();
-	struct timespec ts { 1, 0 };  /* 1s */
+	struct timespec ts { 1, 0 };
 	siginfo_t info{};
 	int got = sigtimedwait(&set, &info, &ts);
 	driver.hwbp.remove(addr);
 	pthread_sigmask(SIG_UNBLOCK, &set, nullptr);
-	if (got == SIG && info.si_signo == SIG)
-		PASS("S8_notify", "signal received si_int=%d si_code=%d", info.si_int, info.si_code);
+	if (got == SIG)
+		PASS("S8_notify", "signal %d received si_int=%d", SIG, info.si_int);
 	else
-		FAIL("S8_notify", "sigtimedwait rc=%d errno=%d (no async delivery)", got, errno);
+		FAIL("S8_notify", "sigtimedwait rc=%d errno=%d — no async delivery in 1s", got, errno);
 }
 
 // ---------------------------------------------------------------------------
@@ -523,6 +532,10 @@ int main() {
 	/* Line-buffered stdout: when we're spawned under adb-shell → pipe → head,
 	 * block-buffering swallows every report() line until exit. */
 	std::setvbuf(stdout, nullptr, _IOLBF, 0);
+	/* Whole-suite watchdog. If any single test wedges (a stray HWBP re-fire
+	 * loop or unhandled RT signal) the alarm fires and the runner still exits,
+	 * so `adb shell` doesn't sit forever waiting on us. */
+	alarm(120);
 	std::printf("== my-driver-test starting (pid=%d) ==\n", getpid());
 	if (!test_open()) {
 		std::printf("driver.open failed — cannot run remaining tests\n");
