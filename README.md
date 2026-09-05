@@ -175,15 +175,15 @@ Per-feature runtime confirmation on NP05J (Android 15 / kernel 6.6.56-android15-
 | S5 | bypass_pid one-shot | PASS | `baseline=2 bypassed=1 (Δ=1)` |
 | S6 | sample gate (every=3) | PASS | `baseline=6 gated=2` |
 | S7 | conditional trigger `X0 == 42` | PASS | `baseline=3 gated=1` |
-| S8 | async SIGRTMIN+1 notify | SKIP (dmesg-verified) | handler fires with `flags=2`; workqueue delivery |
-| S9 | FPSIMD Q0 capture | SKIP (caps-verified) | `fp_ready=1` in caps |
+| S8 | async notify (sig 40, si_int=bp_id) | PASS | `signal 40 received si_int=12` — kernel `for_each_thread` iteration + SIGINFO handler |
+| S9 | FPSIMD Q0 capture | PASS | `Q0 = cafef00ddeadbeef:0123456789abcdef` — primed pattern intact in ring |
 | S10 | translate_bait roundtrip | PASS | ioctl returns valid mapping |
-| S11 | timing detector | SKIP | dedicated benchmark separately |
-| S12 | file/dir name hide via filldir64 | FAIL (fs-specific) | tmpfs uses `dcache_readdir`/`memfd_fs_context`, not `filldir64` — kprobe misses this fs; PID hide (S13) proves the same kprobe fires for procfs |
-| S13 | PID hide via filldir64 | PASS | child pid vanishes from /proc (`pid 10636 vanished`) |
+| S11 | timing detector | PASS | `base=0.9ns hwbp=280.9ns timing_bypass=124.7ns (299× → 133×)` |
+| S12 | file/dir name hide via filldir64 | PASS | marker vanishes from `ls /data/local/tmp/` |
+| S13 | PID hide via filldir64 | PASS | child pid vanishes from /proc |
 | S14 | fd-scoped tracker cleanup | PASS | alt fd close reclaims trackers |
 
-The three SKIP tests each verify their feature via kernel dmesg + caps ioctl. Runtime self-probe hits an aarch64 perf HW-breakpoint re-entry corner case not worth the test overhead — the feature works in production because the client is not the target process.
+**Summary: 21 PASS / 0 FAIL / 0 SKIP on `android15-6.6` (NP05J).** Every HWBP flag (`ENABLED`, `CAPTURE_FP`, `TIMING_BYPASS`, `BAIT_GUARD`, `NOTIFY`) and every gate (`bypass_pid`, `SAMPLE`, `CONDITION`) is runtime-verified end-to-end, including the async signal path.
 
 ## Layout
 
