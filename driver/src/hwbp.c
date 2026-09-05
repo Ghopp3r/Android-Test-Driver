@@ -1126,7 +1126,9 @@ static unsigned long translate_bait(struct mm_struct *mm, unsigned long addr) {
 	char *slash;
 	const char *base;
 	char *p;
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
 	VMA_ITERATOR(vmi, mm, 0);
+#endif
 
 	if (!mm || !addr)
 		return addr;
@@ -1153,7 +1155,12 @@ static unsigned long translate_bait(struct mm_struct *mm, unsigned long addr) {
 	src_start = vma->vm_start;
 	src_end = vma->vm_end;
 
+	/* Maple-tree iteration on 6.1+; vm_next linked list on 5.10..6.0. */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
 	for_each_vma(vmi, vma) {
+#else
+	for (vma = mm->mmap; vma; vma = vma->vm_next) {
+#endif
 		if (!basename_eq(vma->vm_file, namebuf, pathbuf, PATH_MAX))
 			continue;
 		if (cur_end == 0 || vma->vm_start > cur_end + (12u * 1024u)) {
