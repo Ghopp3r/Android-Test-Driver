@@ -1,0 +1,175 @@
+# SPDX-License-Identifier: GPL-2.0
+# CI: build my-driver.ko against every supported Android KMI and compile the Android arm64 client against the shared UAPI.
+# DDK matrix images expose their kernel tree through $KERNEL_SRC.
+# Artefacts: my-driver-<kmi>.ko plus the userspace-arm64-v8a client bundle.
+
+name: build
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - dev
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      ddk_release:
+        description: 'ghcr.io/ylarod/ddk image tag suffix (release date)'
+        required: false
+        # android16-6.12 requires normalized KCFI type IDs. 20251104 is the first DDK release that configures them correctly.
+        default: '20251104'
+        type: string
+      hide_kgsl_strength:
+        description: 'HIDE_KGSL_STRENGTH override (0..3). Empty = default (0).'
+        required: false
+        default: ''
+        type: string
+
+jobs:
+  userspace:
+    name: build userspace arm64-v8a
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Show Android NDK environment
+        run: |
+          set -eux
+          test -n "${ANDROID_NDK_HOME}"
+          test -f "${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake"
+          "${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang" --version
+          cmake --version
+
+      - name: Build C++ client
+        run: |
+          set -eux
+          cmake -S client -B out/client \
+            -DCMAKE_TOOLCHAIN_FILE="${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-30 \
+            -DANDROID_STL=c++_static \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build out/client -j"$(nproc)"
+
+      - name: Upload userspace client
+        uses: actions/upload-artifact@v4
+        with:
+          name: userspace-arm64-v8a
+          path: out/client/my-driver-client
+          if-no-files-found: error
+          retention-days: 30
+
+  build:
+    name: build ${{ matrix.kmi }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        kmi:
+          - android12-5.10
+          - android13-5.10
+          - android13-5.15
+          - android14-5.15
+          - android14-6.1
+          - android15-6.6
+          - android16-6.12
+
+    container:
+      image: ghcr.io/ylarod/ddk:${{ matrix.kmi }}-${{ inputs.ddk_release || '20251104' }}
+      options: --privileged
+
+    env:
+      DRIVER_NAME: my-driver
+      HIDE_SELF_MODULE: '1'
+      HIDE_VMAP: '1'
+      HIDE_TASK: '1'
+      HIDE_KGSL_STRENGTH: ${{ inputs.hide_kgsl_strength || '0' }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Show build environment
+        working-directory: driver
+        run: |
+          echo "=== KMI:           ${{ matrix.kmi }}"
+          echo "=== DDK image tag: ${{ matrix.kmi }}-${{ inputs.ddk_release || '20251104' }}"
+          echo "=== KERNEL_SRC:    $KERNEL_SRC"
+          echo "=== DRIVER_NAME:   $DRIVER_NAME"
+          echo "=== HIDE_SELF_MODULE:   $HIDE_SELF_MODULE"
+          echo "=== HIDE_VMAP:          $HIDE_VMAP"
+          echo "=== HIDE_TASK:          $HIDE_TASK"
+          echo "=== HIDE_KGSL_STRENGTH: $HIDE_KGSL_STRENGTH"
+          uname -a
+          which clang || true
+          clang --version || true
+
+      # Android 16 / 6.12 enables strict KCFI. A module built without integer
+      # normalization can panic before module_init() executes.
+      - name: Verify Android 16 / 6.12 KCFI configuration
+        if: matrix.kmi == 'android16-6.12'
+        working-directory: driver
+        run: |
+          set -eux
+          config="${KERNEL_SRC}/.config"
+          test -r "$config"
+          grep -Fxq 'CONFIG_CFI_CLANG=y' "$config"
+          grep -Fxq 'CONFIG_CFI_ICALL_NORMALIZE_INTEGERS=y' "$config"
+
+      - name: Build ${{ env.DRIVER_NAME }}.ko
+        working-directory: driver
+        run: |
+          set -eux
+          make -j"$(nproc)"
+          ls -la "${DRIVER_NAME}.ko"
+
+      - name: Verify concealment feature gates
+        working-directory: driver
+        run: |
+          set -eux
+          grep -R -F -q --include='*.cmd' -- '-DKCFG_HIDE_SELF_MODULE=1' .
+          grep -R -F -q --include='*.cmd' -- '-DKCFG_HIDE_VMAP=1' .
+          grep -R -F -q --include='*.cmd' -- '-DKCFG_HIDE_TASK=1' .
+          grep -R -F -q --include='*.cmd' -- "-DKCFG_HIDE_KGSL_STRENGTH=${HIDE_KGSL_STRENGTH}" .
+          test -e src/hide_task.o
+          if [ "${HIDE_KGSL_STRENGTH}" = "0" ]; then
+            test ! -e src/stealth.o
+          else
+            test -e src/stealth.o
+          fi
+
+      # Confirm that the normalized KCFI setting reached the external-module
+      # compiler command rather than merely existing in the kernel .config.
+      - name: Verify Android 16 / 6.12 KCFI compiler flags
+        if: matrix.kmi == 'android16-6.12'
+        working-directory: driver
+        run: |
+          set -eux
+          grep -R -F -q --include='*.cmd' -- \
+            '-fsanitize-cfi-icall-experimental-normalize-integers' .
+
+      - name: Stage artefact (rename per-KMI)
+        working-directory: driver
+        run: |
+          set -eux
+          mkdir -p "${GITHUB_WORKSPACE}/out"
+          OUT="${GITHUB_WORKSPACE}/out/${DRIVER_NAME}-${{ matrix.kmi }}.ko"
+          cp "${DRIVER_NAME}.ko" "$OUT"
+          echo "Size (unstripped):  $(du -h "$OUT" | cut -f1)"
+          if command -v llvm-strip >/dev/null 2>&1; then
+            llvm-strip -d "$OUT"
+            echo "Size (stripped -d): $(du -h "$OUT" | cut -f1)"
+          fi
+          ls -la "$OUT"
+
+      - name: Upload ${{ env.DRIVER_NAME }}-${{ matrix.kmi }}.ko
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.DRIVER_NAME }}-${{ matrix.kmi }}.ko
+          path: out/${{ env.DRIVER_NAME }}-${{ matrix.kmi }}.ko
+          if-no-files-found: error
+          retention-days: 30

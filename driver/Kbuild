@@ -1,0 +1,88 @@
+# SPDX-License-Identifier: GPL-2.0
+# Kbuild file. Consumed by the kernel build when KERNELRELEASE is set; do not invoke directly — use `make` in the parent directory.
+
+DRIVER_NAME ?= my-driver
+HIDE_SELF_MODULE ?= 1
+HIDE_VMAP ?= 1
+HIDE_TASK ?= 1
+HIDE_KGSL_STRENGTH ?= 0
+
+# Booleans must be strictly 0 or 1; STRENGTH is 0..3.
+ifeq ($(filter 0 1,$(HIDE_SELF_MODULE)),)
+$(error HIDE_SELF_MODULE must be 0 or 1)
+endif
+ifeq ($(filter 0 1,$(HIDE_VMAP)),)
+$(error HIDE_VMAP must be 0 or 1)
+endif
+ifeq ($(filter 0 1,$(HIDE_TASK)),)
+$(error HIDE_TASK must be 0 or 1)
+endif
+ifeq ($(filter 0 1 2 3,$(HIDE_KGSL_STRENGTH)),)
+$(error HIDE_KGSL_STRENGTH must be 0, 1, 2, or 3)
+endif
+
+# Proactive KGSL kprobes (STRENGTH >= 2) read the shared hidden-PID list from hide_task.c.
+ifneq ($(filter 2 3,$(HIDE_KGSL_STRENGTH)),)
+ifeq ($(HIDE_TASK),0)
+$(error HIDE_KGSL_STRENGTH >= 2 requires HIDE_TASK=1 (proactive KGSL hooks read hide_task's hidden-PID list))
+endif
+endif
+
+obj-m += $(DRIVER_NAME).o
+
+# One .o per .c in src/. Optional subsystems appended below when their gate is on.
+$(DRIVER_NAME)-objs := \
+	src/lifecycle.o \
+	src/comm.o \
+	src/memory.o \
+	src/vfs_hijack.o \
+	src/input_synth.o \
+	src/sensor.o \
+	src/harvest.o \
+	src/hook_engine.o \
+	src/uaccess_target.o \
+	src/kallsym.o \
+	src/hwbp.o \
+	src/user_hook.o
+
+ifneq ($(HIDE_TASK),0)
+$(DRIVER_NAME)-objs += src/hide_task.o
+endif
+
+ifneq ($(HIDE_KGSL_STRENGTH),0)
+$(DRIVER_NAME)-objs += src/stealth.o
+endif
+
+# -I: public headers + intra-subsystem private headers.
+ccflags-y += -I$(src)/include
+ccflags-y += -I$(src)/src
+ccflags-y += -Wno-declaration-after-statement
+ccflags-y += -Wno-unused-function
+ccflags-y += -Wno-unused-variable
+
+# Compile-time knobs. KCFG_* names are what the C code sees.
+# KCFG_TARGET_PACKAGE — Android package name the driver locks onto. Override: `make TARGET_PKG='"com.example.app"'` (quotes must survive shell → preprocessor as a C string literal).
+# KCFG_DRIVER_NAME — module name as a C string (mirrors DRIVER_NAME).
+# KCFG_ANON_INODE_NAME — label passed to anon_inode_getfile (visible in /proc/<pid>/fdinfo as "anon_inode:<name>").
+# KCFG_REBOOT_MAGIC — sentinel the reboot() handshake matches in regs[0]/regs[1] (inner wrapped pt_regs). Same value exported to userspace as DRIVER_REBOOT_MAGIC1/2 in uapi.h.
+# KCFG_HIDE_SELF_MODULE — unlink LKM from /proc/modules + /sys/module/<name>.
+# KCFG_HIDE_VMAP — unlink LKM vmap area from /proc/vmallocinfo.
+# KCFG_HIDE_TASK — install filldir64 kprobe to hide PIDs from /proc readdir; up to HIDE_TASK_MAX_SLOTS.
+# KCFG_HIDE_KGSL_STRENGTH — 0=off, 1=retroactive rb_erase, 2=proactive kprobes only, 3=both.
+TARGET_PKG ?= "cent.tmgp.sgame"
+ANON_INODE_NAME ?= "[driver]"
+REBOOT_MAGIC ?= 0x123456u
+
+ccflags-y += -DKCFG_TARGET_PACKAGE='$(TARGET_PKG)'
+ccflags-y += -DKCFG_DRIVER_NAME='"$(DRIVER_NAME)"'
+ccflags-y += -DKCFG_ANON_INODE_NAME='$(ANON_INODE_NAME)'
+ccflags-y += -DKCFG_REBOOT_MAGIC='$(REBOOT_MAGIC)'
+ccflags-y += -DKCFG_HIDE_SELF_MODULE=$(HIDE_SELF_MODULE)
+ccflags-y += -DKCFG_HIDE_VMAP=$(HIDE_VMAP)
+ccflags-y += -DKCFG_HIDE_TASK=$(HIDE_TASK)
+ccflags-y += -DKCFG_HIDE_KGSL_STRENGTH=$(HIDE_KGSL_STRENGTH)
+
+# Optional feature gates (off by default; pass `ccflags-y+=-D<FLAG>` on make line to enable).
+# KCFG_BUILD_NO_CFI — patch CFI helpers with RET (global, invasive).
+# KCFG_BUILD_PTE_MAPPING — PTE-walk write-RO path in memory.c.
+# KCFG_BUILD_HIDE_SIGNAL — signal-bypass hook.
