@@ -415,12 +415,18 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 	}
 
 	/* Bypass gate (one-shot): match on the target process, not just the
-	 * thread — userspace uses getpid() (TGID) but current->pid is TID. */
+	 * thread — userspace uses getpid() (TGID) but current->pid is TID.
+	 * On any skip we must advance PC (LR-return) to keep the aarch64 debug
+	 * exception path from re-firing on the same instruction — otherwise the
+	 * kernel would loop indefinitely on our BP. Matches the "no PC override
+	 * + not pass_through" behaviour at end of the handler. */
 	{
 		s32 by = READ_ONCE(tracker->bypass_pid);
 		if (by && by == (s32)current->tgid) {
 			cmpxchg(&tracker->bypass_pid, by, 0);
 			LOGW_RL("hwbp: bypass consumed pid=%d\n", by);
+			if (!tracker->pass_through)
+				regs->pc = regs->regs[30];
 			return;
 		}
 	}
@@ -432,6 +438,8 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 			u32 c = ++tracker->sample_counter;
 			if (c % every != 0) {
 				LOGW_RL("hwbp: sample SKIP c=%u every=%u\n", c, every);
+				if (!tracker->pass_through)
+					regs->pc = regs->regs[30];
 				return;
 			}
 			LOGW_RL("hwbp: sample PASS c=%u every=%u\n", c, every);
@@ -439,8 +447,11 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 	}
 
 	/* Condition gate: skip if optional {reg, op, value} does not match. */
-	if (!hwbp_condition_matches(tracker, regs))
+	if (!hwbp_condition_matches(tracker, regs)) {
+		if (!tracker->pass_through)
+			regs->pc = regs->regs[30];
 		return;
+	}
 
 	/* TIMING_BYPASS: no ring push, no signal — reduces observable overhead to
 	 * the perf overflow path alone. Register overrides still applied. */
