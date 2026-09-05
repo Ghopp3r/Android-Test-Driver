@@ -33,3 +33,18 @@ if (CMAKE_BUILD_TYPE STREQUAL "Release")
 endif()
 
 install(TARGETS my-driver-client RUNTIME DESTINATION bin)
+
+# --- test_all: autonomous feature-verification binary --------------------
+# Exercises every feature the plan added and prints PASS/FAIL summaries to
+# stdout so CI + adb + human eyes can all consume it. Exit code is non-zero
+# on any FAIL.
+add_executable(my-driver-test tests/test_all.cpp src/Driver.cpp)
+
+target_include_directories(my-driver-test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/../driver/include)
+target_compile_options(my-driver-test PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Wno-unused-parameter)
+if (CMAKE_BUILD_TYPE STREQUAL "Release")
+	target_compile_options(my-driver-test PRIVATE -Os -ffunction-sections -fdata-sections)
+	target_link_options(my-driver-test PRIVATE -Wl,--gc-sections -s)
+endif()
+
+install(TARGETS my-driver-test RUNTIME DESTINATION bin)

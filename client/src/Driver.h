@@ -144,6 +144,10 @@ public:
     PteHook pteHook;
     HidePid hidePid;
 
+    /* Escape hatch for tests + one-off ioctls that don't have a typed wrapper
+     * yet. Returns true iff the ioctl returned >= 0. */
+    bool rawIoctl(unsigned int cmd, void* arg) { return doIoctlRaw(cmd, arg) >= 0; }
+
 private:
     int doIoctl(unsigned int cmd, drv_ioctl_req* req);
     int doIoctlRaw(unsigned int cmd, void* arg);
