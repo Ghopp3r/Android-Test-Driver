@@ -493,12 +493,32 @@ static void hwbp_notify_worker(struct work_struct *w) {
 	info.si_signo = nw->signal_no;
 	info.si_code = SI_QUEUE;
 	info.si_int = nw->bp_id;
-	/* kill_pid_info delivers process-wide (shared_pending) — any thread in
-	 * the target tgid can pick it up. send_sig_info(sig, info, task) only
-	 * queues to that specific task's private pending, and if the group
-	 * leader happens to be blocked in a syscall that can't process it we
-	 * get stranded silently. */
-	rc = kill_pid_info(nw->signal_no, &info, nw->pid);
+	/* GKI only exports kill_pid + send_sig_info to modules — kill_pid_info,
+	 * do_send_sig_info and group_send_sig_info are not in ksymtab. So we
+	 * fall back to per-thread delivery but explicitly walk every task in
+	 * the tgid so a blocked group leader doesn't strand the signal on some
+	 * other thread's private queue. */
+	{
+		struct task_struct *leader, *t;
+		leader = get_pid_task(nw->pid, PIDTYPE_TGID);
+		if (!leader)
+			leader = get_pid_task(nw->pid, PIDTYPE_PID);
+		if (leader) {
+			rc = -ESRCH;
+			rcu_read_lock();
+			for_each_thread(leader, t) {
+				int r = send_sig_info(nw->signal_no, &info, t);
+				LOGI("hwbp: notify thread pid=%d tgid=%d rc=%d\n",
+				     t->pid, t->tgid, r);
+				if (r == 0) { rc = 0; break; }
+				rc = r;
+			}
+			rcu_read_unlock();
+			put_task_struct(leader);
+		} else {
+			rc = -ESRCH;
+		}
+	}
 	LOGI("hwbp: notify deliver sig=%d rc=%d\n", nw->signal_no, rc);
 
 	/* Best-effort in_flight clear (tracker may already be gone). */

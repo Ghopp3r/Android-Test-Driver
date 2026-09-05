@@ -296,25 +296,21 @@ void test_notify() {
 	driver.hwbp.clearAll();
 	std::printf("[BEGIN] S8_notify\n");
 
-	/* Pin the signal number explicitly. Bionic's SIGRTMIN macro is offset
-	 * from the kernel's — Bionic reserves signals 32..34 for libc-internal
-	 * use (posix-timer, pthread-cancel, pthread-cleanup). Anything under 35
-	 * gets swallowed by libc before user handlers run. Pick 40 — safely
-	 * above Bionic reservations but still a real-time signal that queues
-	 * si_int with the notify payload. */
+	/* Pin the signal number explicitly. Bionic reserves 32..34 for libc
+	 * internals (posix-timer, pthread-cancel, pthread-cleanup); signal 40
+	 * is safely above that window and delivers si_int with the bp_id. */
 	const int SIG = 40;
-	sigset_t set;
-	sigemptyset(&set);
-	sigaddset(&set, SIG);
-	/* Install a fallback SIGINFO handler so a delivery to any thread — before
-	 * pthread_sigmask propagates or during signal race — cannot terminate the
-	 * process (RT signals default to Term). Then block + drain via
-	 * sigtimedwait for deterministic timing. */
+	g_sig_int.store(0, std::memory_order_release);
+
+	/* Async handler path — bionic's sigtimedwait on the main thread
+	 * doesn't reliably drain a signal that was queued to that same
+	 * thread's private pending. Installing a handler + polling a flag
+	 * avoids that libc quirk and doesn't rely on the pthread_sigmask
+	 * ↔ sigtimedwait invariants. */
 	struct sigaction sa{};
 	sa.sa_flags = SA_SIGINFO | SA_RESTART;
 	sa.sa_sigaction = sigrt_handler;
 	sigaction(SIG, &sa, nullptr);
-	pthread_sigmask(SIG_BLOCK, &set, nullptr);
 
 	driver.setTarget(getpid());
 	uint64_t addr = reinterpret_cast<uint64_t>(&probe_fn);
@@ -326,15 +322,19 @@ void test_notify() {
 		driver.hwbp.remove(addr); return;
 	}
 	probe_fn();
-	struct timespec ts { 1, 0 };
-	siginfo_t info{};
-	int got = sigtimedwait(&set, &info, &ts);
+	/* Poll for delivery — workqueue → send_sig_info → handler is
+	 * asynchronous; typical latency is a few ms. */
+	int seen = 0;
+	for (int i = 0; i < 100 && !seen; ++i) {
+		seen = g_sig_int.load(std::memory_order_acquire);
+		if (seen) break;
+		usleep(10000); /* 10ms × 100 = 1s cap */
+	}
 	driver.hwbp.remove(addr);
-	pthread_sigmask(SIG_UNBLOCK, &set, nullptr);
-	if (got == SIG)
-		PASS("S8_notify", "signal %d received si_int=%d", SIG, info.si_int);
+	if (seen)
+		PASS("S8_notify", "signal %d received si_int=%d", SIG, seen);
 	else
-		FAIL("S8_notify", "sigtimedwait rc=%d errno=%d — no async delivery in 1s", got, errno);
+		FAIL("S8_notify", "no async delivery in 1s (signal never fired)");
 }
 
 // ---------------------------------------------------------------------------
