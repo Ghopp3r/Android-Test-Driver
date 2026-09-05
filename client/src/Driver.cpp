@@ -11,7 +11,7 @@
 
 Driver driver;
 
-Driver::Driver() : memory(*this), touch(*this), gyro(*this), hwbp(*this), pteHook(*this), hidePid(*this) {}
+Driver::Driver() : memory(*this), touch(*this), gyro(*this), hwbp(*this), pteHook(*this), hidePid(*this), hideName(*this) {}
 
 Driver::~Driver() {
     close();
@@ -439,4 +439,28 @@ std::vector<pid_t> Driver::HidePid::list() {
     if (m_d.doIoctl(DRV_CMD_HIDE_PID_LIST, &req) < 0) return {};
     out.resize(static_cast<size_t>(req.size));
     return out;
+}
+
+// HideName subsystem — up to 16 exact-basename entries concealed from every
+// filldir64-based readdir (procfs, ext4, f2fs, tmpfs, overlayfs). Same kprobe
+// as HidePid; lazily armed on first add.
+bool Driver::HideName::add(const std::string& name) {
+    if (name.empty() || name.size() >= 64) { errno = EINVAL; return false; }
+    drv_ioctl_req req{};
+    req.buf = reinterpret_cast<uint64_t>(name.data());
+    req.size = name.size();
+    return m_d.doIoctl(DRV_CMD_HIDE_NAME_ADD, &req) >= 0;
+}
+
+bool Driver::HideName::remove(const std::string& name) {
+    if (name.empty() || name.size() >= 64) { errno = EINVAL; return false; }
+    drv_ioctl_req req{};
+    req.buf = reinterpret_cast<uint64_t>(name.data());
+    req.size = name.size();
+    return m_d.doIoctl(DRV_CMD_HIDE_NAME_REMOVE, &req) >= 0;
+}
+
+bool Driver::HideName::clear() {
+    drv_ioctl_req req{};
+    return m_d.doIoctl(DRV_CMD_HIDE_NAME_CLEAR, &req) >= 0;
 }
