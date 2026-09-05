@@ -401,11 +401,25 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 		return;
 	}
 
-	/* Bypass gate (one-shot): if the incoming pid matches bypass_pid, consume
-	 * the token and quietly skip this hit — no ring push, no signal. */
+	/* Rate-limited handler diagnostics — enough to see 3-4 hits then quiet. */
+	{
+		static atomic_t dbg_seen = ATOMIC_INIT(0);
+		int seen = atomic_read(&dbg_seen);
+		if (seen < 12) {
+			atomic_inc(&dbg_seen);
+			LOGI("hwbp: hit tracker=%px cur.pid=%d cur.tgid=%d bypass=%d sample_every=%u sample_ctr=%u flags=%x\n",
+			     tracker, current->pid, current->tgid,
+			     tracker->bypass_pid, tracker->sample_every,
+			     tracker->sample_counter, tracker->flags);
+		}
+	}
+
+	/* Bypass gate (one-shot): match on the target process, not just the
+	 * thread — userspace uses getpid() (TGID) but current->pid is TID. Use
+	 * current->tgid so the gate works for multi-threaded clients too. */
 	{
 		s32 by = READ_ONCE(tracker->bypass_pid);
-		if (by && by == (s32)current->pid) {
+		if (by && by == (s32)current->tgid) {
 			cmpxchg(&tracker->bypass_pid, by, 0);
 			return;
 		}

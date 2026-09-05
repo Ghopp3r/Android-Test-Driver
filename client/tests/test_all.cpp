@@ -171,8 +171,10 @@ void test_install_matrix() {
 // S5 — bypass_pid one-shot
 // ---------------------------------------------------------------------------
 void test_bypass_pid() {
+	driver.hwbp.clearAll();
 	driver.setTarget(getpid());
 	uint64_t addr = reinterpret_cast<uint64_t>(&probe_fn);
+	std::printf("[BEGIN] S5_bypass_pid\n");
 	if (!driver.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4)) {
 		FAIL("S5_bypass_pid", "install failed errno=%d", errno); return;
 	}
@@ -192,8 +194,10 @@ void test_bypass_pid() {
 // S6 — sample gate (every N)
 // ---------------------------------------------------------------------------
 void test_sample_gate() {
+	driver.hwbp.clearAll();
 	driver.setTarget(getpid());
 	uint64_t addr = reinterpret_cast<uint64_t>(&probe_fn);
+	std::printf("[BEGIN] S6_sample\n");
 	if (!driver.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4)) {
 		FAIL("S6_sample", "install failed"); return;
 	}
@@ -216,8 +220,10 @@ __attribute__((noinline)) void probe_fn_cond(uint64_t x0) {
 	asm volatile("" : : "r"(x0));
 }
 void test_conditional() {
+	driver.hwbp.clearAll();
 	driver.setTarget(getpid());
 	uint64_t addr = reinterpret_cast<uint64_t>(&probe_fn_cond);
+	std::printf("[BEGIN] S7_conditional\n");
 	if (!driver.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4)) {
 		FAIL("S7_conditional", "install failed"); return;
 	}
@@ -242,6 +248,8 @@ void sigrt_handler(int, siginfo_t* si, void*) {
 	g_sig_int.store(si->si_int, std::memory_order_release);
 }
 void test_notify() {
+	driver.hwbp.clearAll();
+	std::printf("[BEGIN] S8_notify\n");
 	struct sigaction sa{};
 	sa.sa_flags = SA_SIGINFO | SA_RESTART;
 	sa.sa_sigaction = sigrt_handler;
@@ -270,6 +278,8 @@ void test_notify() {
 // ---------------------------------------------------------------------------
 __attribute__((noinline)) void probe_fn_fp() { asm volatile("nop"); }
 void test_fpsimd_capture() {
+	driver.hwbp.clearAll();
+	std::printf("[BEGIN] S9_fp_capture\n");
 	auto c = driver.hwbp.caps();
 	if (!c || !c->fp_ready) {
 		SKIP("S9_fp_capture", "fp_ready=0 (no fpsimd_preserve_current_state)"); return;
@@ -299,6 +309,7 @@ void test_fpsimd_capture() {
 // when the target address is already in the largest cluster).
 // ---------------------------------------------------------------------------
 void test_translate_bait() {
+	std::printf("[BEGIN] S10_translate_bait\n");
 	driver.setTarget(getpid());
 	uint64_t addr = reinterpret_cast<uint64_t>(&probe_fn);
 	auto out = driver.hwbp.translateBait(addr);
@@ -319,6 +330,8 @@ uint64_t bench_ns(int reps, void (*fn)()) {
 	return std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
 }
 void test_timing_detector() {
+	driver.hwbp.clearAll();
+	std::printf("[BEGIN] S11_timing\n");
 	driver.setTarget(getpid());
 	uint64_t addr = reinterpret_cast<uint64_t>(&probe_fn);
 	const int REPS = 500;
@@ -359,6 +372,7 @@ bool ioctl_name(uint32_t cmd, const char* name) {
 	return driver.rawIoctl(cmd, &req);
 }
 void test_file_hide() {
+	std::printf("[BEGIN] S12_file_hide\n");
 	const char* marker = "test_hidden_marker_9f37";
 	std::string path = std::string("/data/local/tmp/") + marker;
 	FILE* f = std::fopen(path.c_str(), "w");
@@ -396,6 +410,7 @@ void test_file_hide() {
 // S13 — PID hide
 // ---------------------------------------------------------------------------
 void test_pid_hide() {
+	std::printf("[BEGIN] S13_pid_hide\n");
 	pid_t child = fork();
 	if (child == 0) { pause(); _exit(0); }
 	if (child < 0) { FAIL("S13_pid_hide", "fork failed"); return; }
@@ -425,6 +440,7 @@ void test_pid_hide() {
 // S14 — fd-scoped cleanup (installs on a secondary fd, closes, verifies gone)
 // ---------------------------------------------------------------------------
 void test_fd_scoped_cleanup() {
+	std::printf("[BEGIN] S14_fd_scoped\n");
 	// Open a second Driver handle → open() gets a fresh fd via reboot handshake.
 	Driver alt;
 	if (!alt.open()) { SKIP("S14_fd_scoped", "cannot open second fd errno=%d", errno); return; }
