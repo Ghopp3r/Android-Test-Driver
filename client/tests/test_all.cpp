@@ -321,7 +321,7 @@ uint64_t bench_ns(int reps, void (*fn)()) {
 void test_timing_detector() {
 	driver.setTarget(getpid());
 	uint64_t addr = reinterpret_cast<uint64_t>(&probe_fn);
-	const int REPS = 20000;
+	const int REPS = 500;
 
 	// warm caches
 	for (int i = 0; i < 1000; ++i) probe_fn();

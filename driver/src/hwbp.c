@@ -971,8 +971,9 @@ static long hwbp_set_sample(void __user *arg) {
 	tracker = hwbp_lookup_by_pidaddr(req.pid, req.addr, &pid_ref);
 	if (!tracker) { rc = -ENOENT; goto out; }
 	WRITE_ONCE(tracker->sample_every, req.every);
-	if (req.every == 0)
-		WRITE_ONCE(tracker->sample_counter, 0);
+	WRITE_ONCE(tracker->sample_counter, 0);
+	LOGI("hwbp: set_sample pid=%d addr=%px every=%u -> tracker=%px counter=0\n",
+	     req.pid, (void *)(uintptr_t)req.addr, req.every, tracker);
 	rc = 0;
 out:
 	mutex_unlock(&hwbp_mutex);
@@ -1026,6 +1027,8 @@ static long hwbp_set_bypass_pid_ioctl(void __user *arg) {
 	tracker = hwbp_lookup_by_pidaddr(req.pid, req.addr, &pid_ref);
 	if (!tracker) { rc = -ENOENT; goto out; }
 	WRITE_ONCE(tracker->bypass_pid, req.bypass_pid);
+	LOGI("hwbp: set_bypass pid=%d addr=%px bypass_pid=%d -> tracker=%px\n",
+	     req.pid, (void *)(uintptr_t)req.addr, req.bypass_pid, tracker);
 	rc = 0;
 out:
 	mutex_unlock(&hwbp_mutex);
