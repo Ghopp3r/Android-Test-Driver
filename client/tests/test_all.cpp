@@ -297,10 +297,12 @@ void test_notify() {
 	std::printf("[BEGIN] S8_notify\n");
 
 	/* Pin the signal number explicitly. Bionic's SIGRTMIN macro is offset
-	 * from the kernel's (Bionic reserves the low RT signals for libc-internal
-	 * use), so requesting SIGRTMIN+1 in userspace does NOT equal the
-	 * SIGRTMIN+1 the driver sends. Use raw 34 on both sides. */
-	const int SIG = 34;
+	 * from the kernel's — Bionic reserves signals 32..34 for libc-internal
+	 * use (posix-timer, pthread-cancel, pthread-cleanup). Anything under 35
+	 * gets swallowed by libc before user handlers run. Pick 40 — safely
+	 * above Bionic reservations but still a real-time signal that queues
+	 * si_int with the notify payload. */
+	const int SIG = 40;
 	sigset_t set;
 	sigemptyset(&set);
 	sigaddset(&set, SIG);
