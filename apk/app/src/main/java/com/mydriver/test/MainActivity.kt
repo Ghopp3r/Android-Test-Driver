@@ -41,6 +41,13 @@ class MainActivity : AppCompatActivity() {
             }
             renderSummary()
         }
+
+        /* Auto-run on launch if invoked with the extra: makes `adb am start
+         * -n com.mydriver.test/.MainActivity --ez auto_run true` fully
+         * autonomous — no touch input needed. */
+        if (intent?.getBooleanExtra("auto_run", false) == true) {
+            list.postDelayed({ runAll() }, 300)
+        }
     }
 
     private fun runOne(index: Int) {
