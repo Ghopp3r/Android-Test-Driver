@@ -446,6 +446,9 @@ void test_fd_scoped_cleanup() {
 } // anon
 
 int main() {
+	/* Line-buffered stdout: when we're spawned under adb-shell → pipe → head,
+	 * block-buffering swallows every report() line until exit. */
+	std::setvbuf(stdout, nullptr, _IOLBF, 0);
 	std::printf("== my-driver-test starting (pid=%d) ==\n", getpid());
 	if (!test_open()) {
 		std::printf("driver.open failed — cannot run remaining tests\n");
