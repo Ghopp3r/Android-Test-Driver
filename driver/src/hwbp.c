@@ -514,7 +514,6 @@ static void hwbp_notify_worker(struct work_struct *w) {
 		mutex_unlock(&hwbp_mutex);
 	}
 
-out_put_pid:
 	put_pid(nw->pid);
 out:
 	kfree(nw);
