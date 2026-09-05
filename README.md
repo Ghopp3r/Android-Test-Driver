@@ -44,22 +44,20 @@ The driver has four independent hide surfaces. Each is compile-gated so a build 
 
 ### `HIDE_SELF_MODULE` (default 1)
 
-Unlinks the LKM from `/proc/modules` and removes `/sys/module/<name>`. Implemented in `lifecycle.c::conceal_module()`. Applies once at `init_driver`; irreversible for the module's lifetime.
+Unlinks the LKM from `/proc/modules` and removes `/sys/module/<name>`. Additional passes: renames `mod->name` to `KCFG_DECOY_NAME` (default `iptable_filter`) before unlink so any snapshot of `struct module*` reads as an ordinary in-tree subsystem; zeroes `taints`, `srcversion`, `notes_attrs`, `modinfo_attrs`, `build_id`; and arms a kprobe on `m_show`/`s_show` so a stray seq_file walker that reinstates the module would still see it silently skipped. Implemented in `lifecycle.c::conceal_module()` + `module_hide.c`. Applies once at `init_driver`; irreversible for the module's lifetime.
 
 ### `HIDE_VMAP` (default 1)
 
 Unlinks the LKM's data vmap area from `vmap_area_list` (source of `/proc/vmallocinfo`) and, when the single-root form exists (kernels < 6.9), also `rb_erase()`s it from `vmap_area_root`. Probe is `&drv` (core `.bss`) so the module's `__init` section is untouched and `do_free_init` still cleans up correctly. Falls back to no-op if `vmap_area_list` is not in kallsyms. See `lifecycle.c::conceal_vmap()`.
 
-### `HIDE_TASK` (default 1) — PID hider
+### `HIDE_TASK` (default 1) — PID + file/dir hider
 
-`hide_task.c` registers a kprobe on `filldir64` and, when the entry name parses as a decimal PID in the hidden set, spoofs the return so `/proc` readdir cannot list it. Up to `HIDE_TASK_MAX_SLOTS` (8) PIDs. Direct `open("/proc/<pid>/...")` still works — this is a readdir-level hide, not a full-process cloak.
+`hide_task.c` registers a single kprobe on `filldir64` that services two hide sets: numeric `/proc/<pid>` directory entries (up to 8 slots) and exact-basename file/dir entries (up to 16 slots × 64 chars). A single hook covers every `iterate_dir` path — ext4, f2fs, tmpfs, overlayfs, proc, sysfs — because they all funnel through `filldir64` for the seq output. Direct `open()`/`stat()` still works; this is a readdir-level cloak.
 
-Client API (`driver.hide`):
+Client API:
 
-- `add(pid)` — kprobe is lazily armed on first call, then the PID enters the hidden set.
-- `remove(pid)`, `clear()`, `list()` — self-explanatory.
-
-Ioctl range: `HIDE_PID_ADD=0x50`, `HIDE_PID_REMOVE=0x51`, `HIDE_PID_CLEAR=0x52`, `HIDE_PID_LIST=0x53`.
+- PID: `add(pid)`, `remove(pid)`, `clear()`, `list()` (`HIDE_PID_ADD=0x50`..`HIDE_PID_LIST=0x53`).
+- File/dir name: `HIDE_NAME_ADD=0x54`, `HIDE_NAME_REMOVE=0x55`, `HIDE_NAME_CLEAR=0x56`. `req.buf` points at the raw name bytes, `req.size` is its length.
 
 ### `HIDE_KGSL_STRENGTH` (default 0) — KGSL/Adreno hider
 
@@ -67,7 +65,7 @@ Values:
 
 - `0` — off. `DRV_CMD_HIDE_KGSL` returns `-EOPNOTSUPP`.
 - `1` — retroactive `rb_erase`. `hide_kgsl_by_pid()` walks the two `kgsl_process_private` rbtrees held by `kgsl_driver` and erases the entry whose PID string matches. One-shot per client call; KGSL will re-create the entry if the same PID reopens a GPU context.
-- `2` — proactive kprobes. `kgsl_process_init_sysfs`, `kgsl_process_init_debugfs`, and `sysfs_create_group` all pre-check `hide_task_contains(current->tgid)` and, for hidden PIDs, spoof `-ENOMEM` before the original runs. `sysfs_create_group` additionally walks the kobject parent chain (up to 7 levels) and only fires when a `"kgsl"` name is found in the ancestry, so unrelated sysfs creations pay a single lock-read.
+- `2` — proactive kprobes. Four hooks: `kgsl_process_init_sysfs`, `kgsl_process_init_debugfs`, `sysfs_create_group`, and `kobject_init_and_add`. All pre-check `hide_task_contains(current->tgid)` and, for hidden PIDs, spoof `-ENOMEM` before the original runs. `sysfs_create_group` and `kobject_init_and_add` additionally walk the kobject parent chain (up to 7 levels) and only fire when a `"kgsl"` name is found in the ancestry, so unrelated sysfs creations pay a single lock-read.
 - `3` — both.
 
 `STRENGTH >= 2` requires `HIDE_TASK=1` (the proactive layer reads the shared hidden-PID list).
@@ -76,9 +74,26 @@ Versioned offsets for the `kgsl_driver` and `kgsl_process_private` structs live 
 
 ## Hook APIs
 
-`driver.hwbp` installs an AArch64 execute breakpoint for one target thread. Supports X0..X30, PC, SIMD V0..V31 low/high overrides, a 32-entry hit ring, idempotent override updates, and explicit remove/clear. `passThrough=false` is a fall-through-instruction-only early return valid at function entry; `passThrough=true` cannot combine with a PC override. `getHits()` captures raw entry registers before overrides. Tracker identity uses the kernel PID object and target `mm`, preventing numeric PID reuse and `execve()` redirection.
+`driver.hwbp` installs AArch64 hardware breakpoints and watchpoints per target thread. Types: `X` (execute, 4B only), `R`/`W`/`RW` (watchpoint, 1/2/4/8B). Overrides mutate X0..X30, PC, SIMD V0..V31 low/high before the target instruction retires; a 32-entry per-tracker hit ring optionally carries FPSIMD state (Q0..Q31 + fpsr/fpcr) captured at hit time. Trackers are fd-scoped — closing the driver fd sweeps only that fd's trackers, leaving other clients' state intact. Tracker identity uses the kernel PID object and target `mm`, preventing PID reuse and `execve()` redirection.
 
-HWBP commands: `INSTALL=0x40`, `REMOVE=0x41`, `SET_OVERRIDE=0x42`, `GET_HITS=0x43`, `CLEAR_ALL=0x44`.
+Feature flags (bitmask in `install(...flags)`):
+
+| Flag | Bit | Effect |
+| --- | ---: | --- |
+| `DRV_HWBP_FLAG_BAIT_GUARD` | 0x1 | Redirect `addr` into the largest same-basename VMA cluster — defeats AC bait mmaps that share a filename with the real module. |
+| `DRV_HWBP_FLAG_NOTIFY` | 0x2 | Deliver `SIGRTMIN+1` (or a caller-chosen realtime signal) to `notify_pid` on hit; `si_int` carries the tracker id. |
+| `DRV_HWBP_FLAG_CAPTURE_FP` | 0x4 | Fill `q_lo/q_hi/fpsr/fpcr` in every hit record from `current->thread.uw.fpsimd_state`. |
+| `DRV_HWBP_FLAG_TIMING_BYPASS` | 0x8 | Skip ring push + signal delivery on hit — overrides still applied. Reduces observable per-hit overhead to the perf overflow path. |
+
+Per-tracker gates (each set via its own ioctl after install):
+
+- `SET_SAMPLE(every=N)` — only every Nth hit fires; useful for high-frequency call sites.
+- `SET_CONDITION({reg, op, value})` — hit is filtered unless `regs->X[reg] op value` matches (`op ∈ {EQ, NE, LT, LE, GT, GE}`).
+- `SET_BYPASS_PID(pid)` — one-shot: the next hit whose `current->pid == pid` is silently consumed. Prevents self-recursion when the client itself calls the traced function.
+- `SET_NOTIFY({notify_pid, signal_no})` — mutable signal target; `signal_no=0` picks `SIGRTMIN+1`.
+- `TRANSLATE_BAIT(addr)` — returns the LARGEST same-basename VMA cluster address for `addr` without installing anything; useful for probing an AC mapping layout ahead of `install`.
+
+HWBP command range: primary `0x40..0x47` (INSTALL, REMOVE, SET_OVERRIDE, GET_HITS, CLEAR_ALL, GET_CAPS, SET_SAMPLE, SET_CONDITION); extended `0x60..0x62` (SET_BYPASS_PID, SET_NOTIFY, TRANSLATE_BAIT). `GET_CAPS` returns `{num_brps, num_wrps, ring_slots, max_overrides, hit_bytes, install_req_bytes, flags_supported, fp_ready}` from `ID_AA64DFR0_EL1` — use it to feature-detect before install.
 
 `driver.pteHook` installs a 32-byte constant-return stub in a private executable mapping. `returnConst<T>()` supports integral, enum, pointer, float, and double values; `returnVoid()` emits only a return. Stub starts with a BTI-compatible landing, validates one complete same-page private VMA, and records expected patched bytes. Reinstall, remove, and `clearAll()` refuse to overwrite a changed function.
 
@@ -124,6 +139,49 @@ NP05J / Android 15 / kernel 6.6.56. Values in µs, mean per operation. Reference
 | PTE install/update | 4.063 | 4.219 | 5.156 |
 | HWBP install | 9.688 | 13.438 | 2448.438 |
 | HWBP SET_OVERRIDE | 0.834 | 0.938 | 0.938 |
+
+### HWBP capability report (via `DRV_CMD_HWBP_GET_CAPS`)
+
+Runtime-reported on NP05J:
+
+- `num_brps=6`, `num_wrps=4` — matches Snapdragon debug spec
+- `ring_slots=32` per tracker
+- `max_overrides=10` per tracker
+- `hit_bytes=800` (X0..X30 + Q0..Q31 + fpsr/fpcr)
+- `install_req_bytes=192`
+- `fp_ready=1` — `fpsimd_preserve_current_state` resolved
+- `flags_supported=0xF` — BAIT_GUARD | NOTIFY | CAPTURE_FP | TIMING_BYPASS
+
+### Verified stealth surface (autonomous `my-driver-test` on kernel 6.6.56-android15-8)
+
+| Layer | Check | Result |
+| --- | --- | --- |
+| `/proc/modules` | `grep -E "my_driver\|iptable_filter"` | not listed |
+| `/sys/module/` | `ls | grep my_driver` | not listed |
+| `/proc/vmallocinfo` | `grep my_driver` | vmap unlinked |
+| `/proc/kallsyms` | `grep -E "hwbp_install\|conceal_module\|hide_task_add"` | 0 matches (module symbols not exported) |
+| `/sys/kernel/debug/kprobes/list` | endpoint | absent on hardened Android kernel — no leak possible |
+
+### HWBP feature matrix (autonomous `my-driver-test`)
+
+Per-feature runtime confirmation. Tests self-target the running process so results are reproducible without a game target.
+
+| Test | Feature | Status |
+| --- | --- | ---: |
+| S1 | driver.open via reboot handshake | PASS |
+| S2 | /proc/modules + /sys/module + /proc/vmallocinfo stealth | PASS × 3 |
+| S3 | HWBP CAPS ioctl round-trip | PASS |
+| S4 | install matrix R/W/RW/X × valid `bp_len` combos | PASS × 6 |
+| S5 | bypass_pid one-shot | (see hwbp debug log for gate diagnosis) |
+| S6 | sample gate (every N) | (see hwbp debug log) |
+| S7 | conditional trigger {reg, op, value} | see log |
+| S8 | async SIGRTMIN+1 notify | see log |
+| S9 | FPSIMD Q0 capture in hit ring | see log |
+| S10 | translate_bait roundtrip | see log |
+| S11 | timing detector (base / hwbp / TIMING_BYPASS) | see log |
+| S12 | file/dir name hide via filldir64 | see log |
+| S13 | PID hide via filldir64 | see log |
+| S14 | fd-scoped tracker cleanup | see log |
 
 ## Layout
 
