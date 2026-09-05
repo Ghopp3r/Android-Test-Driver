@@ -128,6 +128,7 @@ long hide_kgsl_by_pid(void *kgsl_driver, int target_pid) {
 static struct kprobe kp_kgsl_sysfs;
 static struct kprobe kp_kgsl_debugfs;
 static struct kprobe kp_sysfs_create_group;
+static struct kprobe kp_kobject_init_and_add;
 static bool proactive_armed;
 
 /* Skip original + return -ENOMEM (kgsl_process_init_* return int; -ENOMEM propagates cleanly). */
@@ -144,24 +145,45 @@ static int kgsl_init_pre(struct kprobe *p, struct pt_regs *regs) {
 	return 1;
 }
 
+/* Shared "does this kobject sit under a kgsl-named parent" check. Depth 7 is
+ * the empirically observed maximum for KGSL's per-process sysfs subtree. */
+static bool kobj_parent_chain_is_kgsl(const struct kobject *kobj) {
+	int i;
+	for (i = 0; i < 7 && kobj; i++) {
+		if (kobj->name && strstr(kobj->name, "kgsl"))
+			return true;
+		kobj = kobj->parent;
+	}
+	return false;
+}
+
 /* sysfs_create_group(kobj, grp): scan up to 7 parents for a name containing "kgsl". Cheap fast-reject for non-hidden PIDs — check hide_task_contains first. */
 static int sysfs_create_group_pre(struct kprobe *p, struct pt_regs *regs) {
+	(void)p;
+	if (!regs) return 0;
+	if (!hide_task_contains((pid_t)current->tgid)) return 0;
+	if (!kobj_parent_chain_is_kgsl((struct kobject *)regs->regs[0])) return 0;
+	spoof_enomem_and_skip(regs);
+	return 1;
+}
+
+/* D.1: kobject_init_and_add(kobj, ktype, parent, fmt, ...). Fires for KGSL
+ * per-process kobj creations that never route through sysfs_create_group
+ * (e.g. direct kobject_init_and_add of a "proc" subtree). Same gate. */
+static int kobject_init_and_add_pre(struct kprobe *p, struct pt_regs *regs) {
 	struct kobject *kobj;
-	int i;
+	struct kobject *parent;
 
 	(void)p;
 	if (!regs) return 0;
 	if (!hide_task_contains((pid_t)current->tgid)) return 0;
 
 	kobj = (struct kobject *)regs->regs[0];
-	for (i = 0; i < 7 && kobj; i++) {
-		if (kobj->name && strstr(kobj->name, "kgsl")) {
-			spoof_enomem_and_skip(regs);
-			return 1;
-		}
-		kobj = kobj->parent;
-	}
-	return 0;
+	parent = (struct kobject *)regs->regs[2];
+	if (!kobj_parent_chain_is_kgsl(kobj) && !kobj_parent_chain_is_kgsl(parent))
+		return 0;
+	spoof_enomem_and_skip(regs);
+	return 1;
 }
 
 static int arm_one(struct kprobe *kp, const char *name, kprobe_pre_handler_t handler) {
@@ -188,6 +210,11 @@ int kgsl_stealth_arm(void) {
 	if (rc) { unregister_kprobe(&kp_kgsl_sysfs); return rc; }
 	rc = arm_one(&kp_sysfs_create_group, "sysfs_create_group", sysfs_create_group_pre);
 	if (rc) { unregister_kprobe(&kp_kgsl_sysfs); unregister_kprobe(&kp_kgsl_debugfs); return rc; }
+	/* D.1: catch direct kobject creations that skip sysfs_create_group. Failure
+	 * here is non-fatal — the first three probes already cover the common paths. */
+	rc = arm_one(&kp_kobject_init_and_add, "kobject_init_and_add", kobject_init_and_add_pre);
+	if (rc)
+		LOGW("kgsl stealth: kobject_init_and_add unavailable; continuing without it\n");
 	proactive_armed = true;
 	return 0;
 }

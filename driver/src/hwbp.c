@@ -2,6 +2,7 @@
 // AArch64 user execute-breakpoint overrides and hit capture.
 
 #include <linux/errno.h>
+#include <linux/fs.h>
 #include <linux/hw_breakpoint.h>
 #include <linux/kernel.h>
 #include <linux/kprobes.h>
@@ -10,11 +11,14 @@
 #include <linux/mm.h>
 #include <linux/mmap_lock.h>
 #include <linux/mutex.h>
+#include <linux/path.h>
 #include <linux/perf_event.h>
 #include <linux/pid.h>
 #include <linux/sched.h>
 #include <linux/sched/mm.h>
 #include <linux/sched/task.h>
+#include <linux/sched/signal.h>
+#include <linux/signal.h>
 #include <linux/slab.h>
 #include <linux/spinlock.h>
 #include <linux/string.h>
@@ -22,6 +26,10 @@
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <linux/version.h>
+#include <linux/workqueue.h>
+
+#include <asm/cputype.h>
+#include <asm/sysreg.h>
 
 #include <asm/compat.h>
 #include <asm/cpufeature.h>
@@ -82,6 +90,8 @@ struct hwbp_tracker {
 	u32 bp_type;
 	u32 pass_through;
 	u32 orphaned;
+	u32 flags;                   /* DRV_HWBP_FLAG_* — snapshot of install-time flags */
+	struct file *owner_file;     /* fd-scoped cleanup: cleared when this fd is closed */
 	spinlock_t override_lock;
 	u32 override_count;
 	struct drv_hwbp_reg_override overrides[DRV_HWBP_MAX_OVERRIDES];
@@ -92,10 +102,43 @@ struct hwbp_tracker {
 	u32 ring_count;
 	u64 ring_tail_seq;
 	enum hwbp_toggle_state toggle;
+
+	/* Gate fields (mutated under override_lock; read lock-free in the handler). */
+	u32 sample_every;            /* 0 = every hit */
+	u32 sample_counter;
+	u32 has_condition;
+	u32 cond_op;                 /* DRV_HWBP_COND_* */
+	u32 cond_reg;                /* 0..30 (X-reg index) */
+	u32 _cond_pad;
+	u64 cond_value;
+	s32 bypass_pid;              /* one-shot: cleared to 0 after consumed */
+
+	/* Async signal delivery (E.HWBP.1). */
+	struct pid *notify_pid_ref;
+	u32 notify_signal;           /* 0 = SIGRTMIN+1 (34) */
+	u32 notify_seq;              /* debouncer — increment in handler, drain in get_hits */
+	u32 notify_in_flight;        /* single outstanding worker */
+	u32 tracker_id;              /* stable id for si_int payload */
 };
 
 static LIST_HEAD(hwbp_trackers);
 static DEFINE_MUTEX(hwbp_mutex);
+static atomic_t hwbp_tracker_id_seq = ATOMIC_INIT(1);
+
+/* HW cap snapshot (populated once in hwbp_init from ID_AA64DFR0_EL1). */
+static u32 hwbp_num_brps;
+static u32 hwbp_num_wrps;
+
+struct hwbp_notify_work {
+	struct work_struct work;
+	struct pid *pid;
+	int signal_no;
+	int bp_id;
+};
+
+/* Forward declarations for helpers used inside the handler. */
+static unsigned long translate_bait(struct mm_struct *mm, unsigned long addr);
+static void hwbp_notify_worker(struct work_struct *w);
 
 static int hwbp_validate_override(const struct drv_hwbp_reg_override *override) {
 	if (!override)
@@ -176,15 +219,36 @@ static void hwbp_ring_push(struct hwbp_tracker *tracker, const struct pt_regs *r
 	struct drv_hwbp_hit *hit;
 	unsigned long flags;
 	u32 i;
+	bool want_fp = (tracker->flags & DRV_HWBP_FLAG_CAPTURE_FP) && hwbp_fp_ready;
+
+	/* FPSIMD save runs in this task's context — the perf overflow handler is
+	 * called from the exception path with current == the target task. Do it
+	 * BEFORE acquiring the ring spinlock: the helper may sleep on 5.10 (it
+	 * flushes the SVE state), and we cannot hold a raw spinlock across that. */
+	struct user_fpsimd_state fp_snap;
+	if (want_fp) {
+		drv_call_fpsimd_preserve_current_state(drv_fpsimd_preserve_current_state_ptr);
+		fp_snap = current->thread.uw.fpsimd_state;
+	}
 
 	spin_lock_irqsave(&tracker->ring_lock, flags);
 	hit = &tracker->ring[tracker->ring_head];
+	memset(hit, 0, sizeof(*hit));
 	hit->timestamp_ns = ktime_get_boottime_ns();
 	hit->pc = regs->pc;
 	hit->sp = regs->sp;
 	hit->pstate = regs->pstate;
 	for (i = 0; i < ARRAY_SIZE(hit->x); i++)
 		hit->x[i] = regs->regs[i];
+	if (want_fp) {
+		for (i = 0; i < 32; i++) {
+			/* vregs[i] is __uint128_t: low 8B = D[i].low, high 8B = D[i].high */
+			hit->q_lo[i] = (u64)fp_snap.vregs[i];
+			hit->q_hi[i] = (u64)(fp_snap.vregs[i] >> 64);
+		}
+		hit->fpsr = fp_snap.fpsr;
+		hit->fpcr = fp_snap.fpcr;
+	}
 	tracker->ring_head = (tracker->ring_head + 1u) % DRV_HWBP_HIT_RING_SLOTS;
 	if (tracker->ring_count < DRV_HWBP_HIT_RING_SLOTS) {
 		tracker->ring_count++;
@@ -193,6 +257,26 @@ static void hwbp_ring_push(struct hwbp_tracker *tracker, const struct pt_regs *r
 		tracker->ring_tail_seq++;
 	}
 	spin_unlock_irqrestore(&tracker->ring_lock, flags);
+}
+
+/* Evaluate the optional condition guard: returns true if the handler should
+ * proceed (condition matched OR no condition set). cond_reg indexes X0..X30. */
+static bool hwbp_condition_matches(const struct hwbp_tracker *tracker, const struct pt_regs *regs) {
+	u64 v;
+	if (!READ_ONCE(tracker->has_condition))
+		return true;
+	if (tracker->cond_reg > 30u)
+		return true;
+	v = regs->regs[tracker->cond_reg];
+	switch (tracker->cond_op) {
+	case DRV_HWBP_COND_EQ: return v == tracker->cond_value;
+	case DRV_HWBP_COND_NE: return v != tracker->cond_value;
+	case DRV_HWBP_COND_LT: return (s64)v <  (s64)tracker->cond_value;
+	case DRV_HWBP_COND_LE: return (s64)v <= (s64)tracker->cond_value;
+	case DRV_HWBP_COND_GT: return (s64)v >  (s64)tracker->cond_value;
+	case DRV_HWBP_COND_GE: return (s64)v >= (s64)tracker->cond_value;
+	default:               return true;
+	}
 }
 
 static void hwbp_apply_gp(struct pt_regs *regs, const struct drv_hwbp_reg_override *overrides, u32 count) {
@@ -260,11 +344,39 @@ static void hwbp_disable_orphaned(struct hwbp_tracker *tracker, struct perf_even
 		LOGW_RL("hwbp: disable stale tracker rc=%d\n", rc);
 }
 
+static void hwbp_maybe_notify(struct hwbp_tracker *tracker) {
+	struct hwbp_notify_work *nw;
+	struct pid *pid_ref;
+	int signal_no;
+
+	if (!(tracker->flags & DRV_HWBP_FLAG_NOTIFY))
+		return;
+	if (cmpxchg(&tracker->notify_in_flight, 0u, 1u) != 0u)
+		return;
+	pid_ref = READ_ONCE(tracker->notify_pid_ref);
+	if (!pid_ref) {
+		WRITE_ONCE(tracker->notify_in_flight, 0u);
+		return;
+	}
+	nw = kmalloc(sizeof(*nw), GFP_ATOMIC);
+	if (!nw) {
+		WRITE_ONCE(tracker->notify_in_flight, 0u);
+		return;
+	}
+	nw->pid = get_pid(pid_ref);
+	signal_no = READ_ONCE(tracker->notify_signal);
+	nw->signal_no = signal_no ? signal_no : (SIGRTMIN + 1);
+	nw->bp_id = (int)tracker->tracker_id;
+	INIT_WORK(&nw->work, hwbp_notify_worker);
+	queue_work(system_wq, &nw->work);
+}
+
 static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, struct pt_regs *regs) {
 	struct hwbp_tracker *tracker;
 	struct drv_hwbp_reg_override overrides[DRV_HWBP_MAX_OVERRIDES];
 	u32 count;
 	int rc;
+	bool timing_bypass;
 
 	(void)data;
 	if (!bp || !regs)
@@ -277,6 +389,8 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 		return;
 	}
 
+	/* pass_through toggle path: the second hit is our own re-arm — rearm to
+	 * origin and skip all gates. Applies only to execute breakpoints. */
 	if (tracker->pass_through && READ_ONCE(tracker->toggle) == HWBP_TOGGLE_NEXT) {
 		rc = hwbp_set_breakpoint_address(bp, tracker->addr);
 		if (rc) {
@@ -287,8 +401,39 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 		return;
 	}
 
+	/* Bypass gate (one-shot): if the incoming pid matches bypass_pid, consume
+	 * the token and quietly skip this hit — no ring push, no signal. */
+	{
+		s32 by = READ_ONCE(tracker->bypass_pid);
+		if (by && by == (s32)current->pid) {
+			cmpxchg(&tracker->bypass_pid, by, 0);
+			return;
+		}
+	}
+
+	/* Sample gate: fire only when sample_counter % sample_every == 0. */
+	{
+		u32 every = READ_ONCE(tracker->sample_every);
+		if (every) {
+			u32 c = ++tracker->sample_counter;
+			if (c % every != 0)
+				return;
+		}
+	}
+
+	/* Condition gate: skip if optional {reg, op, value} does not match. */
+	if (!hwbp_condition_matches(tracker, regs))
+		return;
+
+	/* TIMING_BYPASS: no ring push, no signal — reduces observable overhead to
+	 * the perf overflow path alone. Register overrides still applied. */
+	timing_bypass = !!(tracker->flags & DRV_HWBP_FLAG_TIMING_BYPASS);
+
 	count = hwbp_snapshot_overrides(tracker, overrides);
-	hwbp_ring_push(tracker, regs);
+	if (!timing_bypass) {
+		hwbp_ring_push(tracker, regs);
+		hwbp_maybe_notify(tracker);
+	}
 	if (hwbp_has_fp_override(overrides, count))
 		hwbp_apply_fp(overrides, count);
 	hwbp_apply_gp(regs, overrides, count);
@@ -307,6 +452,45 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 }
 NOKPROBE_SYMBOL(hwbp_handler);
 
+static void hwbp_notify_worker(struct work_struct *w) {
+	struct hwbp_notify_work *nw = container_of(w, struct hwbp_notify_work, work);
+	struct task_struct *task;
+	struct kernel_siginfo info;
+
+	if (!nw->pid)
+		goto out;
+	task = get_pid_task(nw->pid, PIDTYPE_TGID);
+	if (!task)
+		task = get_pid_task(nw->pid, PIDTYPE_PID);
+	if (!task)
+		goto out_put_pid;
+
+	memset(&info, 0, sizeof(info));
+	info.si_signo = nw->signal_no;
+	info.si_code = SI_QUEUE;
+	info.si_int = nw->bp_id;
+	send_sig_info(nw->signal_no, &info, task);
+	put_task_struct(task);
+
+	/* Best-effort in_flight clear (tracker may already be gone). */
+	{
+		struct hwbp_tracker *tr;
+		mutex_lock(&hwbp_mutex);
+		list_for_each_entry(tr, &hwbp_trackers, node) {
+			if ((int)tr->tracker_id == nw->bp_id) {
+				WRITE_ONCE(tr->notify_in_flight, 0u);
+				break;
+			}
+		}
+		mutex_unlock(&hwbp_mutex);
+	}
+
+out_put_pid:
+	put_pid(nw->pid);
+out:
+	kfree(nw);
+}
+
 static struct hwbp_tracker *hwbp_lookup_locked(struct pid *pid_ref, u64 addr) {
 	struct hwbp_tracker *tracker;
 
@@ -324,6 +508,8 @@ static void hwbp_tracker_free(struct hwbp_tracker *tracker) {
 		mmdrop(tracker->mm);
 	if (tracker->pid_ref)
 		put_pid(tracker->pid_ref);
+	if (tracker->notify_pid_ref)
+		put_pid(tracker->notify_pid_ref);
 	kfree(tracker);
 }
 
@@ -450,7 +636,7 @@ static int hwbp_normalize_install(struct drv_hwbp_install_req *req) {
 	return 0;
 }
 
-static long hwbp_install(void __user *arg) {
+static long hwbp_install(void __user *arg, struct file *owner) {
 	struct drv_hwbp_install_req req;
 	struct hwbp_tracker *tracker;
 	struct hwbp_tracker *existing;
@@ -471,6 +657,21 @@ static long hwbp_install(void __user *arg) {
 	rc = hwbp_get_task_mm(pid_ref, &task, &mm);
 	if (rc)
 		goto out_put_pid;
+
+	/* BAIT_GUARD: translate the requested addr into the LARGEST contiguous
+	 * VMA cluster with the same file basename BEFORE we validate the address
+	 * — an AC bait mmap yields a small non-primary cluster; ours resolves
+	 * anywhere in that same file. If translation returned the input as-is,
+	 * the address was already in the largest cluster (or had no file). */
+	if (req.flags & DRV_HWBP_FLAG_BAIT_GUARD) {
+		unsigned long real = translate_bait(mm, (unsigned long)req.addr);
+		if (real && real != (unsigned long)req.addr) {
+			LOGI("hwbp: bait_guard %llx -> %lx\n",
+			     (unsigned long long)req.addr, real);
+			req.addr = real;
+		}
+	}
+
 	rc = hwbp_validate_address(mm, (unsigned long)req.addr, req.bp_type, req.bp_len);
 	if (rc)
 		goto out_put_task_mm;
@@ -490,6 +691,8 @@ static long hwbp_install(void __user *arg) {
 		if (existing->bp_type != req.bp_type || existing->bp_len != req.bp_len || existing->pass_through != req.pass_through) {
 			rc = -EBUSY;
 		} else {
+			/* Update mutable install-time state — flags mask + overrides. */
+			existing->flags = req.flags;
 			hwbp_set_overrides(existing, &req);
 			rc = 0;
 		}
@@ -516,6 +719,9 @@ static long hwbp_install(void __user *arg) {
 	tracker->bp_len = req.bp_len;
 	tracker->bp_type = req.bp_type;
 	tracker->pass_through = req.pass_through;
+	tracker->flags = req.flags;
+	tracker->tracker_id = (u32)atomic_inc_return(&hwbp_tracker_id_seq);
+	tracker->owner_file = owner;
 	tracker->toggle = HWBP_TOGGLE_ORIGIN;
 	hwbp_set_overrides(tracker, &req);
 	hw_breakpoint_init(&attr);
@@ -674,6 +880,8 @@ static long hwbp_get_hits(void __user *arg) {
 	tracker->ring_tail = (tracker->ring_tail + count) % DRV_HWBP_HIT_RING_SLOTS;
 	tracker->ring_count -= count;
 	tracker->ring_tail_seq += count;
+	/* Drained: re-arm the notify debouncer so the next hit signals again. */
+	WRITE_ONCE(tracker->notify_in_flight, 0u);
 	spin_unlock_irqrestore(&tracker->ring_lock, flags);
 	rc = 0;
 
@@ -697,13 +905,305 @@ static long hwbp_clear_all(void) {
 	return 0;
 }
 
+/* fd-scoped cleanup (A.2): remove only the trackers whose owning fd is @f.
+ * Called from the file_operations .release path in comm.c so a client crash
+ * or explicit close reliably reclaims its own HWBP slots without touching
+ * unrelated clients' trackers. */
+void hwbp_clear_by_file(struct file *f) {
+	struct hwbp_tracker *tracker;
+	struct hwbp_tracker *next;
+
+	if (!f)
+		return;
+	mutex_lock(&hwbp_mutex);
+	list_for_each_entry_safe(tracker, next, &hwbp_trackers, node) {
+		if (tracker->owner_file == f) {
+			list_del(&tracker->node);
+			hwbp_unregister_and_free(tracker);
+		}
+	}
+	mutex_unlock(&hwbp_mutex);
+}
+
+static long hwbp_get_caps(void __user *arg) {
+	struct drv_hwbp_caps caps;
+	memset(&caps, 0, sizeof(caps));
+	caps.num_brps = hwbp_num_brps;
+	caps.num_wrps = hwbp_num_wrps;
+	caps.ring_slots = DRV_HWBP_HIT_RING_SLOTS;
+	caps.max_overrides = DRV_HWBP_MAX_OVERRIDES;
+	caps.hit_bytes = sizeof(struct drv_hwbp_hit);
+	caps.install_req_bytes = sizeof(struct drv_hwbp_install_req);
+	caps.flags_supported = DRV_HWBP_FLAG_BAIT_GUARD | DRV_HWBP_FLAG_NOTIFY |
+			       DRV_HWBP_FLAG_CAPTURE_FP | DRV_HWBP_FLAG_TIMING_BYPASS;
+	caps.fp_ready = hwbp_fp_ready ? 1u : 0u;
+	if (copy_to_user(arg, &caps, sizeof(caps)) != 0)
+		return -EFAULT;
+	return 0;
+}
+
+/* Shared lookup + apply used by every "set_*" ioctl below. */
+static struct hwbp_tracker *hwbp_lookup_by_pidaddr(s32 pid, u64 addr, struct pid **out_pid_ref) {
+	struct pid *pid_ref;
+	struct hwbp_tracker *tracker;
+
+	if (hwbp_get_pid_ref((u64)pid, &pid_ref) != 0) {
+		*out_pid_ref = NULL;
+		return NULL;
+	}
+	addr = (u64)untagged_addr((unsigned long)addr);
+	tracker = hwbp_lookup_locked(pid_ref, addr);
+	*out_pid_ref = pid_ref;
+	return tracker;
+}
+
+static long hwbp_set_sample(void __user *arg) {
+	struct drv_hwbp_sample_req req;
+	struct hwbp_tracker *tracker;
+	struct pid *pid_ref;
+	long rc;
+
+	if (copy_from_user(&req, arg, sizeof(req)) != 0)
+		return -EFAULT;
+	if (req.pid <= 0)
+		return -EINVAL;
+	mutex_lock(&hwbp_mutex);
+	tracker = hwbp_lookup_by_pidaddr(req.pid, req.addr, &pid_ref);
+	if (!tracker) { rc = -ENOENT; goto out; }
+	WRITE_ONCE(tracker->sample_every, req.every);
+	if (req.every == 0)
+		WRITE_ONCE(tracker->sample_counter, 0);
+	rc = 0;
+out:
+	mutex_unlock(&hwbp_mutex);
+	if (pid_ref)
+		put_pid(pid_ref);
+	return rc;
+}
+
+static long hwbp_set_condition(void __user *arg) {
+	struct drv_hwbp_condition_req req;
+	struct hwbp_tracker *tracker;
+	struct pid *pid_ref;
+	long rc;
+
+	if (copy_from_user(&req, arg, sizeof(req)) != 0)
+		return -EFAULT;
+	if (req.pid <= 0)
+		return -EINVAL;
+	if (req.cond_reg > 30u)
+		return -EINVAL;
+	if (req.cond_op > DRV_HWBP_COND_GE)
+		return -EINVAL;
+	mutex_lock(&hwbp_mutex);
+	tracker = hwbp_lookup_by_pidaddr(req.pid, req.addr, &pid_ref);
+	if (!tracker) { rc = -ENOENT; goto out; }
+	tracker->cond_reg = req.cond_reg;
+	tracker->cond_op = req.cond_op;
+	tracker->cond_value = req.cond_value;
+	/* Publish has_condition last so the handler sees a consistent snapshot. */
+	smp_wmb();
+	WRITE_ONCE(tracker->has_condition, req.cond_op == DRV_HWBP_COND_NONE ? 0u : 1u);
+	rc = 0;
+out:
+	mutex_unlock(&hwbp_mutex);
+	if (pid_ref)
+		put_pid(pid_ref);
+	return rc;
+}
+
+static long hwbp_set_bypass_pid_ioctl(void __user *arg) {
+	struct drv_hwbp_bypass_req req;
+	struct hwbp_tracker *tracker;
+	struct pid *pid_ref;
+	long rc;
+
+	if (copy_from_user(&req, arg, sizeof(req)) != 0)
+		return -EFAULT;
+	if (req.pid <= 0)
+		return -EINVAL;
+	mutex_lock(&hwbp_mutex);
+	tracker = hwbp_lookup_by_pidaddr(req.pid, req.addr, &pid_ref);
+	if (!tracker) { rc = -ENOENT; goto out; }
+	WRITE_ONCE(tracker->bypass_pid, req.bypass_pid);
+	rc = 0;
+out:
+	mutex_unlock(&hwbp_mutex);
+	if (pid_ref)
+		put_pid(pid_ref);
+	return rc;
+}
+
+static long hwbp_set_notify_ioctl(void __user *arg) {
+	struct drv_hwbp_notify_req req;
+	struct hwbp_tracker *tracker;
+	struct pid *pid_ref;
+	struct pid *new_notify = NULL;
+	struct pid *old_notify;
+	long rc;
+
+	if (copy_from_user(&req, arg, sizeof(req)) != 0)
+		return -EFAULT;
+	if (req.pid <= 0)
+		return -EINVAL;
+	if (req.notify_pid > 0) {
+		new_notify = find_get_pid(req.notify_pid);
+		if (!new_notify)
+			return -ESRCH;
+	}
+	mutex_lock(&hwbp_mutex);
+	tracker = hwbp_lookup_by_pidaddr(req.pid, req.addr, &pid_ref);
+	if (!tracker) { rc = -ENOENT; goto out; }
+	old_notify = tracker->notify_pid_ref;
+	tracker->notify_pid_ref = new_notify;
+	new_notify = old_notify; /* freed below */
+	tracker->notify_signal = req.signal_no;
+	if (tracker->notify_pid_ref)
+		tracker->flags |= DRV_HWBP_FLAG_NOTIFY;
+	else
+		tracker->flags &= ~DRV_HWBP_FLAG_NOTIFY;
+	WRITE_ONCE(tracker->notify_in_flight, 0u);
+	rc = 0;
+out:
+	mutex_unlock(&hwbp_mutex);
+	if (pid_ref)
+		put_pid(pid_ref);
+	if (new_notify)
+		put_pid(new_notify);
+	return rc;
+}
+
+static long hwbp_translate_bait_ioctl(void __user *arg) {
+	struct drv_hwbp_bait_req req;
+	struct task_struct *task;
+	struct mm_struct *mm;
+	struct pid *pid_ref;
+	long rc;
+
+	if (copy_from_user(&req, arg, sizeof(req)) != 0)
+		return -EFAULT;
+	if (req.pid <= 0)
+		return -EINVAL;
+	rc = hwbp_get_pid_ref((u64)req.pid, &pid_ref);
+	if (rc)
+		return rc;
+	rc = hwbp_get_task_mm(pid_ref, &task, &mm);
+	if (rc) { put_pid(pid_ref); return rc; }
+	req.real_addr = translate_bait(mm, (unsigned long)req.addr);
+	mmput(mm);
+	put_task_struct(task);
+	put_pid(pid_ref);
+	if (copy_to_user(arg, &req, sizeof(req)) != 0)
+		return -EFAULT;
+	return 0;
+}
+
+/* BAIT_GUARD implementation (E.HWBP.6): scan the target mm's VMAs, cluster
+ * contiguous ranges that share a file basename, and redirect @addr into the
+ * LARGEST such cluster. Callers that pass an address in a legit-looking bait
+ * mmap (typical anti-cheat setup) end up placing the HWBP on the true module
+ * mapping instead. Returns @addr unchanged when no better target is found. */
+static bool basename_eq(const struct file *f, const char *want, char *scratch, size_t scratch_len) {
+	char *p;
+	if (!f) return false;
+	p = d_path(&f->f_path, scratch, (int)scratch_len);
+	if (IS_ERR(p)) return false;
+	{
+		char *slash = strrchr(p, '/');
+		const char *base = slash ? slash + 1 : p;
+		return strcmp(base, want) == 0;
+	}
+}
+
+static unsigned long translate_bait(struct mm_struct *mm, unsigned long addr) {
+	struct vm_area_struct *vma;
+	unsigned long src_start = 0, src_end = 0;
+	unsigned long best_start = 0, best_end = 0;
+	unsigned long cur_start = 0, cur_end = 0;
+	unsigned long new_addr;
+	char *pathbuf;
+	char *namebuf;
+	char *slash;
+	const char *base;
+	char *p;
+	VMA_ITERATOR(vmi, mm, 0);
+
+	if (!mm || !addr)
+		return addr;
+
+	pathbuf = kmalloc(PATH_MAX, GFP_KERNEL);
+	namebuf = kmalloc(PATH_MAX, GFP_KERNEL);
+	if (!pathbuf || !namebuf)
+		goto out_free;
+
+	mmap_read_lock(mm);
+	vma = find_vma(mm, addr);
+	if (!vma || addr < vma->vm_start || !vma->vm_file) {
+		mmap_read_unlock(mm);
+		goto out_free;
+	}
+	p = d_path(&vma->vm_file->f_path, pathbuf, PATH_MAX);
+	if (IS_ERR(p)) {
+		mmap_read_unlock(mm);
+		goto out_free;
+	}
+	slash = strrchr(p, '/');
+	base = slash ? slash + 1 : p;
+	strscpy(namebuf, base, PATH_MAX);
+	src_start = vma->vm_start;
+	src_end = vma->vm_end;
+
+	for_each_vma(vmi, vma) {
+		if (!basename_eq(vma->vm_file, namebuf, pathbuf, PATH_MAX))
+			continue;
+		if (cur_end == 0 || vma->vm_start > cur_end + (12u * 1024u)) {
+			if (cur_end - cur_start > best_end - best_start) {
+				best_start = cur_start;
+				best_end = cur_end;
+			}
+			cur_start = vma->vm_start;
+		}
+		cur_end = vma->vm_end;
+	}
+	if (cur_end - cur_start > best_end - best_start) {
+		best_start = cur_start;
+		best_end = cur_end;
+	}
+	mmap_read_unlock(mm);
+
+	if (best_start && best_start != src_start) {
+		new_addr = best_start + (addr - src_start);
+		if (new_addr < best_end) {
+			kfree(pathbuf);
+			kfree(namebuf);
+			return new_addr;
+		}
+	}
+out_free:
+	kfree(pathbuf);
+	kfree(namebuf);
+	return addr;
+}
+
 int hwbp_init(void) {
+	u64 dfr0;
 	if (hwbp_initialized)
 		return hwbp_ready ? 0 : -EOPNOTSUPP;
 	hwbp_initialized = true;
 	BUILD_BUG_ON(sizeof(struct drv_hwbp_reg_override) != 16);
 	BUILD_BUG_ON(sizeof(struct drv_hwbp_install_req) != 192);
-	BUILD_BUG_ON(sizeof(struct drv_hwbp_hit) != 280);
+	BUILD_BUG_ON(sizeof(struct drv_hwbp_hit) != 800);
+	BUILD_BUG_ON(sizeof(struct drv_hwbp_caps) != 32);
+	BUILD_BUG_ON(sizeof(struct drv_hwbp_sample_req) != 24);
+	BUILD_BUG_ON(sizeof(struct drv_hwbp_condition_req) != 32);
+	BUILD_BUG_ON(sizeof(struct drv_hwbp_bypass_req) != 24);
+	BUILD_BUG_ON(sizeof(struct drv_hwbp_notify_req) != 24);
+	BUILD_BUG_ON(sizeof(struct drv_hwbp_bait_req) != 24);
+
+	dfr0 = read_sysreg_s(SYS_ID_AA64DFR0_EL1);
+	hwbp_num_brps = (u32)(((dfr0 >> 12) & 0xFu) + 1u);
+	hwbp_num_wrps = (u32)(((dfr0 >> 20) & 0xFu) + 1u);
+	LOGI("hwbp: hardware caps brps=%u wrps=%u\n", hwbp_num_brps, hwbp_num_wrps);
 	drv_register_user_hw_bp_ptr = (drv_register_user_hw_bp_fn_t)kallsym_lookup("register_user_hw_breakpoint");
 	drv_unregister_hw_bp_ptr = (drv_unregister_hw_bp_fn_t)kallsym_lookup("unregister_hw_breakpoint");
 	drv_modify_user_hw_bp_ptr = (drv_modify_user_hw_bp_fn_t)kallsym_lookup("modify_user_hw_breakpoint");
@@ -719,12 +1219,12 @@ int hwbp_init(void) {
 	return 0;
 }
 
-long do_hwbp_cmd(unsigned int cmd, void __user *arg) {
+long do_hwbp_cmd(unsigned int cmd, void __user *arg, struct file *owner) {
 	if (!hwbp_ready)
 		return -EOPNOTSUPP;
 	switch (cmd) {
 		case DRV_CMD_HWBP_INSTALL:
-			return hwbp_install(arg);
+			return hwbp_install(arg, owner);
 		case DRV_CMD_HWBP_SET_OVERRIDE:
 			return hwbp_set_override(arg);
 		case DRV_CMD_HWBP_REMOVE:
@@ -733,6 +1233,27 @@ long do_hwbp_cmd(unsigned int cmd, void __user *arg) {
 			return hwbp_get_hits(arg);
 		case DRV_CMD_HWBP_CLEAR_ALL:
 			return hwbp_clear_all();
+		case DRV_CMD_HWBP_GET_CAPS:
+			return hwbp_get_caps(arg);
+		case DRV_CMD_HWBP_SET_SAMPLE:
+			return hwbp_set_sample(arg);
+		case DRV_CMD_HWBP_SET_CONDITION:
+			return hwbp_set_condition(arg);
+		default:
+			return -ENOTTY;
+	}
+}
+
+long do_hwbp_ext_cmd(unsigned int cmd, void __user *arg) {
+	if (!hwbp_ready)
+		return -EOPNOTSUPP;
+	switch (cmd) {
+		case DRV_CMD_HWBP_SET_BYPASS_PID:
+			return hwbp_set_bypass_pid_ioctl(arg);
+		case DRV_CMD_HWBP_SET_NOTIFY:
+			return hwbp_set_notify_ioctl(arg);
+		case DRV_CMD_HWBP_TRANSLATE_BAIT:
+			return hwbp_translate_bait_ioctl(arg);
 		default:
 			return -ENOTTY;
 	}

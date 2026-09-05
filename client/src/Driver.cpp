@@ -283,14 +283,64 @@ static bool target_pid_to_s32(pid_t pid, int32_t& out) {
     return true;
 }
 
-bool Driver::Hwbp::install(uint64_t addr, const std::vector<drv_hwbp_reg_override>& overrides, bool passThrough, uint32_t bpType, uint32_t bpLen) {
+bool Driver::Hwbp::install(uint64_t addr, const std::vector<drv_hwbp_reg_override>& overrides, bool passThrough, uint32_t bpType, uint32_t bpLen, uint32_t flags) {
     drv_hwbp_install_req req{};
     if (!target_pid_to_s32(m_d.m_targetPid, req.pid) || !fill_hwbp_overrides(req, overrides)) return false;
     req.addr = addr;
     req.bp_type = bpType;
     req.bp_len = bpLen;
     req.pass_through = passThrough ? 1u : 0u;
+    req.flags = flags;
     return m_d.doIoctlRaw(DRV_CMD_HWBP_INSTALL, &req) >= 0;
+}
+
+std::optional<drv_hwbp_caps> Driver::Hwbp::caps() {
+    drv_hwbp_caps c{};
+    if (m_d.doIoctlRaw(DRV_CMD_HWBP_GET_CAPS, &c) < 0) return std::nullopt;
+    return c;
+}
+
+bool Driver::Hwbp::setSample(uint64_t addr, uint32_t every) {
+    drv_hwbp_sample_req req{};
+    if (!target_pid_to_s32(m_d.m_targetPid, req.pid)) return false;
+    req.addr = addr;
+    req.every = every;
+    return m_d.doIoctlRaw(DRV_CMD_HWBP_SET_SAMPLE, &req) >= 0;
+}
+
+bool Driver::Hwbp::setCondition(uint64_t addr, uint32_t reg, uint32_t op, uint64_t value) {
+    drv_hwbp_condition_req req{};
+    if (!target_pid_to_s32(m_d.m_targetPid, req.pid)) return false;
+    req.addr = addr;
+    req.cond_reg = reg;
+    req.cond_op = op;
+    req.cond_value = value;
+    return m_d.doIoctlRaw(DRV_CMD_HWBP_SET_CONDITION, &req) >= 0;
+}
+
+bool Driver::Hwbp::setBypassPid(uint64_t addr, int32_t bypassPid) {
+    drv_hwbp_bypass_req req{};
+    if (!target_pid_to_s32(m_d.m_targetPid, req.pid)) return false;
+    req.addr = addr;
+    req.bypass_pid = bypassPid;
+    return m_d.doIoctlRaw(DRV_CMD_HWBP_SET_BYPASS_PID, &req) >= 0;
+}
+
+bool Driver::Hwbp::setNotify(uint64_t addr, int32_t notifyPid, uint32_t signalNo) {
+    drv_hwbp_notify_req req{};
+    if (!target_pid_to_s32(m_d.m_targetPid, req.pid)) return false;
+    req.addr = addr;
+    req.notify_pid = notifyPid;
+    req.signal_no = signalNo;
+    return m_d.doIoctlRaw(DRV_CMD_HWBP_SET_NOTIFY, &req) >= 0;
+}
+
+std::optional<uint64_t> Driver::Hwbp::translateBait(uint64_t addr) {
+    drv_hwbp_bait_req req{};
+    if (!target_pid_to_s32(m_d.m_targetPid, req.pid)) return std::nullopt;
+    req.addr = addr;
+    if (m_d.doIoctlRaw(DRV_CMD_HWBP_TRANSLATE_BAIT, &req) < 0) return std::nullopt;
+    return req.real_addr;
 }
 
 bool Driver::Hwbp::setOverride(uint64_t addr, const std::vector<drv_hwbp_reg_override>& overrides) {

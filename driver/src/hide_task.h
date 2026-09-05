@@ -16,6 +16,11 @@ void hide_task_clear(void);
 int hide_task_list(pid_t *out, size_t max);
 bool hide_task_contains(pid_t pid);
 
+/* B.1: hide directory entries by exact name from every filldir64 readdir. */
+int hide_task_name_add(const char *name);
+int hide_task_name_remove(const char *name);
+void hide_task_name_clear(void);
+
 long do_hide_task_cmd(unsigned int cmd, void __user *arg);
 
 #else
@@ -27,6 +32,9 @@ static inline int hide_task_remove(pid_t pid) { (void)pid; return -EOPNOTSUPP; }
 static inline void hide_task_clear(void) { }
 static inline int hide_task_list(pid_t *out, size_t max) { (void)out; (void)max; return -EOPNOTSUPP; }
 static inline bool hide_task_contains(pid_t pid) { (void)pid; return false; }
+static inline int hide_task_name_add(const char *n) { (void)n; return -EOPNOTSUPP; }
+static inline int hide_task_name_remove(const char *n) { (void)n; return -EOPNOTSUPP; }
+static inline void hide_task_name_clear(void) { }
 static inline long do_hide_task_cmd(unsigned int cmd, void __user *arg) { (void)cmd; (void)arg; return -EOPNOTSUPP; }
 
 #endif /* KCFG_HIDE_TASK */

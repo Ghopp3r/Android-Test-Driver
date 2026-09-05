@@ -81,8 +81,19 @@ enum drv_cmd {
 	DRV_CMD_HWBP_SET_OVERRIDE = 0x42,
 	DRV_CMD_HWBP_GET_HITS = 0x43,
 	DRV_CMD_HWBP_CLEAR_ALL = 0x44,
+	DRV_CMD_HWBP_GET_CAPS = 0x45,
+	DRV_CMD_HWBP_SET_SAMPLE = 0x46,
+	DRV_CMD_HWBP_SET_CONDITION = 0x47,
 	DRV_CMD_HWBP_RANGE_FIRST = DRV_CMD_HWBP_INSTALL,
-	DRV_CMD_HWBP_RANGE_LAST = DRV_CMD_HWBP_CLEAR_ALL,
+	DRV_CMD_HWBP_RANGE_LAST = DRV_CMD_HWBP_SET_CONDITION,
+
+	/* Extended HWBP commands placed after PTE + hide ranges to keep the
+	 * primary HWBP range contiguous. */
+	DRV_CMD_HWBP_SET_BYPASS_PID = 0x60,
+	DRV_CMD_HWBP_SET_NOTIFY = 0x61,
+	DRV_CMD_HWBP_TRANSLATE_BAIT = 0x62,
+	DRV_CMD_HWBP_EXT_RANGE_FIRST = DRV_CMD_HWBP_SET_BYPASS_PID,
+	DRV_CMD_HWBP_EXT_RANGE_LAST = DRV_CMD_HWBP_TRANSLATE_BAIT,
 
 	DRV_CMD_PTE_HOOK_INSTALL = 0x48,
 	DRV_CMD_PTE_HOOK_REMOVE = 0x49,
@@ -95,8 +106,13 @@ enum drv_cmd {
 	DRV_CMD_HIDE_PID_REMOVE = 0x51,
 	DRV_CMD_HIDE_PID_CLEAR = 0x52,
 	DRV_CMD_HIDE_PID_LIST = 0x53,
+	/* B.1: file/dir name concealment sharing the same filldir64 kprobe.
+	 * req.buf points at a NUL-optional name string of req.size bytes. */
+	DRV_CMD_HIDE_NAME_ADD = 0x54,
+	DRV_CMD_HIDE_NAME_REMOVE = 0x55,
+	DRV_CMD_HIDE_NAME_CLEAR = 0x56,
 	DRV_CMD_HIDE_PID_RANGE_FIRST = DRV_CMD_HIDE_PID_ADD,
-	DRV_CMD_HIDE_PID_RANGE_LAST = DRV_CMD_HIDE_PID_LIST,
+	DRV_CMD_HIDE_PID_RANGE_LAST = DRV_CMD_HIDE_NAME_CLEAR,
 };
 
 /* Exact full argv[0] lookup request. flags is reserved and pid receives the target TGID. */
@@ -154,6 +170,22 @@ struct drv_input_event {
 #define DRV_HWBP_MAX_OVERRIDES 10u
 #define DRV_HWBP_HIT_RING_SLOTS 32u
 
+/* Per-tracker install flags. `flags` field is reused from the historical `_pad`
+ * slot of drv_hwbp_install_req — zero means legacy behaviour. */
+#define DRV_HWBP_FLAG_BAIT_GUARD (1u << 0)   /* redirect addr via translate_bait */
+#define DRV_HWBP_FLAG_NOTIFY (1u << 1)       /* deliver SIGRTMIN+1 to notify_pid on hit */
+#define DRV_HWBP_FLAG_CAPTURE_FP (1u << 2)   /* capture FPSIMD state (Q0..Q31) in hit ring */
+#define DRV_HWBP_FLAG_TIMING_BYPASS (1u << 3) /* skip ring push & signal to eliminate observable latency */
+
+/* Condition operator for DRV_CMD_HWBP_SET_CONDITION. */
+#define DRV_HWBP_COND_NONE 0u
+#define DRV_HWBP_COND_EQ 1u
+#define DRV_HWBP_COND_NE 2u
+#define DRV_HWBP_COND_LT 3u
+#define DRV_HWBP_COND_LE 4u
+#define DRV_HWBP_COND_GT 5u
+#define DRV_HWBP_COND_GE 6u
+
 enum drv_hwbp_reg_kind {
 	DRV_HWBP_REG_NONE = 0,
 	DRV_HWBP_REG_X = 1,
@@ -175,16 +207,73 @@ struct drv_hwbp_install_req {
 	__u32 override_count;
 	__u64 addr;
 	__u32 pass_through;
-	__u32 _pad;
+	__u32 flags; /* DRV_HWBP_FLAG_* bitmask; historical name was _pad */
 	struct drv_hwbp_reg_override overrides[DRV_HWBP_MAX_OVERRIDES];
 };
 
+/* Per-hit record. FPSIMD tail (q_lo/q_hi) is populated only when the tracker
+ * was installed with DRV_HWBP_FLAG_CAPTURE_FP; otherwise the tail stays zero. */
 struct drv_hwbp_hit {
 	__u64 timestamp_ns;
 	__u64 pc;
 	__u64 sp;
 	__u64 pstate;
 	__u64 x[31];
+	__u64 q_lo[32]; /* Q0..Q31 low half (V0..V31.D[0]) */
+	__u64 q_hi[32]; /* Q0..Q31 high half (V0..V31.D[1]) */
+	__u32 fpsr;
+	__u32 fpcr;
+};
+
+struct drv_hwbp_caps {
+	__u32 num_brps;         /* execute slots reported by ID_AA64DFR0_EL1.BRPs */
+	__u32 num_wrps;         /* watchpoint slots reported by ID_AA64DFR0_EL1.WRPs */
+	__u32 ring_slots;       /* DRV_HWBP_HIT_RING_SLOTS */
+	__u32 max_overrides;    /* DRV_HWBP_MAX_OVERRIDES */
+	__u32 hit_bytes;        /* sizeof(struct drv_hwbp_hit) */
+	__u32 install_req_bytes;/* sizeof(struct drv_hwbp_install_req) */
+	__u32 flags_supported;  /* DRV_HWBP_FLAG_* mask this build understands */
+	__u32 fp_ready;         /* 1 if FPSIMD helpers were resolved at init */
+};
+
+struct drv_hwbp_sample_req {
+	__s32 pid;
+	__u32 _pad;
+	__u64 addr;
+	__u32 every;   /* 0 = disable, N = fire only when hit_count % N == 0 */
+	__u32 _pad2;
+};
+
+struct drv_hwbp_condition_req {
+	__s32 pid;
+	__u32 cond_op;   /* DRV_HWBP_COND_* */
+	__u64 addr;
+	__u32 cond_reg;  /* 0..30 (X-reg index) */
+	__u32 _pad;
+	__u64 cond_value;
+};
+
+struct drv_hwbp_bypass_req {
+	__s32 pid;
+	__u32 _pad;
+	__u64 addr;
+	__s32 bypass_pid; /* one-shot: hit consumed instead of firing */
+	__u32 _pad2;
+};
+
+struct drv_hwbp_notify_req {
+	__s32 pid;
+	__s32 notify_pid;   /* recipient of SIGRTMIN+1; 0 = disable */
+	__u64 addr;
+	__u32 signal_no;    /* 0 = default SIGRTMIN+1 (34) */
+	__u32 _pad;
+};
+
+struct drv_hwbp_bait_req {
+	__s32 pid;
+	__u32 _pad;
+	__u64 addr;         /* user-supplied "bait" address */
+	__u64 real_addr;    /* [out] translated address (equal to input if no translation) */
 };
 
 /* AArch64 user-code return-stub ABI. TRAMPOLINE is reserved for v2. */
