@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="tagPass">#2E7D32</color>
+    <color name="tagFail">#C62828</color>
+    <color name="tagSkip">#616161</color>
+    <color name="tagPending">#9E9E9E</color>
+</resources>

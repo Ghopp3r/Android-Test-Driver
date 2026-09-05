@@ -401,11 +401,11 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 		return;
 	}
 
-	/* Rate-limited handler diagnostics — enough to see 3-4 hits then quiet. */
+	/* Rate-limited handler diagnostics — larger limit so gated tests are observable. */
 	{
 		static atomic_t dbg_seen = ATOMIC_INIT(0);
 		int seen = atomic_read(&dbg_seen);
-		if (seen < 12) {
+		if (seen < 80) {
 			atomic_inc(&dbg_seen);
 			LOGI("hwbp: hit tracker=%px cur.pid=%d cur.tgid=%d bypass=%d sample_every=%u sample_ctr=%u flags=%x\n",
 			     tracker, current->pid, current->tgid,
@@ -415,12 +415,12 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 	}
 
 	/* Bypass gate (one-shot): match on the target process, not just the
-	 * thread — userspace uses getpid() (TGID) but current->pid is TID. Use
-	 * current->tgid so the gate works for multi-threaded clients too. */
+	 * thread — userspace uses getpid() (TGID) but current->pid is TID. */
 	{
 		s32 by = READ_ONCE(tracker->bypass_pid);
 		if (by && by == (s32)current->tgid) {
 			cmpxchg(&tracker->bypass_pid, by, 0);
+			LOGW_RL("hwbp: bypass consumed pid=%d\n", by);
 			return;
 		}
 	}
@@ -430,8 +430,11 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 		u32 every = READ_ONCE(tracker->sample_every);
 		if (every) {
 			u32 c = ++tracker->sample_counter;
-			if (c % every != 0)
+			if (c % every != 0) {
+				LOGW_RL("hwbp: sample SKIP c=%u every=%u\n", c, every);
 				return;
+			}
+			LOGW_RL("hwbp: sample PASS c=%u every=%u\n", c, every);
 		}
 	}
 
