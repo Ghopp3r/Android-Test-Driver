@@ -483,27 +483,23 @@ NOKPROBE_SYMBOL(hwbp_handler);
 
 static void hwbp_notify_worker(struct work_struct *w) {
 	struct hwbp_notify_work *nw = container_of(w, struct hwbp_notify_work, work);
-	struct task_struct *task;
 	struct kernel_siginfo info;
+	int rc;
 
 	if (!nw->pid)
 		goto out;
-	task = get_pid_task(nw->pid, PIDTYPE_TGID);
-	if (!task)
-		task = get_pid_task(nw->pid, PIDTYPE_PID);
-	if (!task)
-		goto out_put_pid;
 
 	memset(&info, 0, sizeof(info));
 	info.si_signo = nw->signal_no;
 	info.si_code = SI_QUEUE;
 	info.si_int = nw->bp_id;
-	{
-		int rc = send_sig_info(nw->signal_no, &info, task);
-		LOGI("hwbp: notify deliver sig=%d tgid=%d rc=%d\n",
-		     nw->signal_no, task->tgid, rc);
-	}
-	put_task_struct(task);
+	/* kill_pid_info delivers process-wide (shared_pending) — any thread in
+	 * the target tgid can pick it up. send_sig_info(sig, info, task) only
+	 * queues to that specific task's private pending, and if the group
+	 * leader happens to be blocked in a syscall that can't process it we
+	 * get stranded silently. */
+	rc = kill_pid_info(nw->signal_no, &info, nw->pid);
+	LOGI("hwbp: notify deliver sig=%d rc=%d\n", nw->signal_no, rc);
 
 	/* Best-effort in_flight clear (tracker may already be gone). */
 	{
