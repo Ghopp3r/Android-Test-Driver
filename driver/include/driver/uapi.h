@@ -138,9 +138,19 @@ struct drv_input_event {
 	__s32 value; /* Tracking ID can be -1. */
 };
 
-/* AArch64 per-thread hardware-breakpoint ABI. */
-#define DRV_HWBP_TYPE_EXECUTE 4u
-#define DRV_HWBP_LEN_EXECUTE 4u
+/* AArch64 per-thread hardware-breakpoint ABI. Type/len values mirror the
+ * kernel's HW_BREAKPOINT_R/W/RW/X so the driver can forward them unchanged.
+ * EXECUTE is the historical name for X and kept as an alias. */
+#define DRV_HWBP_TYPE_R 1u
+#define DRV_HWBP_TYPE_W 2u
+#define DRV_HWBP_TYPE_RW 3u
+#define DRV_HWBP_TYPE_X 4u
+#define DRV_HWBP_TYPE_EXECUTE DRV_HWBP_TYPE_X
+#define DRV_HWBP_LEN_1 1u
+#define DRV_HWBP_LEN_2 2u
+#define DRV_HWBP_LEN_4 4u
+#define DRV_HWBP_LEN_8 8u
+#define DRV_HWBP_LEN_EXECUTE DRV_HWBP_LEN_4
 #define DRV_HWBP_MAX_OVERRIDES 10u
 #define DRV_HWBP_HIT_RING_SLOTS 32u
 

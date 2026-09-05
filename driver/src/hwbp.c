@@ -333,15 +333,21 @@ static void hwbp_unregister_and_free(struct hwbp_tracker *tracker) {
 	hwbp_tracker_free(tracker);
 }
 
-static int hwbp_validate_address(struct mm_struct *mm, unsigned long addr) {
+static int hwbp_validate_address(struct mm_struct *mm, unsigned long addr, u32 bp_type, u32 bp_len) {
 	struct vm_area_struct *vma;
 	int rc = 0;
 
-	if (!addr || addr & (DRV_HWBP_LEN_EXECUTE - 1u) || addr > ULONG_MAX - DRV_HWBP_LEN_EXECUTE)
+	/* Execute breakpoints trap on the aarch64 4-byte instruction boundary.
+	 * Watchpoints trap on any bp_len-aligned span (arm64 supports 1/2/4/8). */
+	u32 align = (bp_type == DRV_HWBP_TYPE_X) ? DRV_HWBP_LEN_4 : bp_len;
+
+	if (!addr || (addr & (align - 1u)) || addr > ULONG_MAX - bp_len)
 		return -EINVAL;
 	mmap_read_lock(mm);
 	vma = find_vma(mm, addr);
-	if (!vma || addr < vma->vm_start || addr + DRV_HWBP_LEN_EXECUTE > vma->vm_end || !(vma->vm_flags & VM_EXEC) || (vma->vm_flags & (VM_IO | VM_PFNMAP)))
+	if (!vma || addr < vma->vm_start || addr + bp_len > vma->vm_end || (vma->vm_flags & (VM_IO | VM_PFNMAP)))
+		rc = -EFAULT;
+	else if (bp_type == DRV_HWBP_TYPE_X && !(vma->vm_flags & VM_EXEC))
 		rc = -EFAULT;
 	mmap_read_unlock(mm);
 	return rc;
@@ -408,10 +414,33 @@ static int hwbp_normalize_install(struct drv_hwbp_install_req *req) {
 		return -EINVAL;
 	req->addr = (u64)untagged_addr((unsigned long)req->addr);
 	if (!req->bp_type)
-		req->bp_type = DRV_HWBP_TYPE_EXECUTE;
+		req->bp_type = DRV_HWBP_TYPE_X;
 	if (!req->bp_len)
-		req->bp_len = DRV_HWBP_LEN_EXECUTE;
-	if (req->bp_type != DRV_HWBP_TYPE_EXECUTE || req->bp_len != DRV_HWBP_LEN_EXECUTE || req->pass_through > 1u)
+		req->bp_len = (req->bp_type == DRV_HWBP_TYPE_X) ? DRV_HWBP_LEN_4 : DRV_HWBP_LEN_4;
+
+	/* Accept every combination the ARMv8 debug spec allows: X requires len=4
+	 * (single instruction), watchpoints (R/W/RW) allow 1/2/4/8. */
+	switch (req->bp_type) {
+	case DRV_HWBP_TYPE_R:
+	case DRV_HWBP_TYPE_W:
+	case DRV_HWBP_TYPE_RW:
+		if (req->bp_len != DRV_HWBP_LEN_1 && req->bp_len != DRV_HWBP_LEN_2 &&
+		    req->bp_len != DRV_HWBP_LEN_4 && req->bp_len != DRV_HWBP_LEN_8)
+			return -EOPNOTSUPP;
+		/* pass_through has no fall-through semantics for watchpoints — the
+		 * data access does not advance PC; toggling the address would just
+		 * re-fire on the next load/store to the same location. */
+		if (req->pass_through)
+			return -EOPNOTSUPP;
+		break;
+	case DRV_HWBP_TYPE_X:
+		if (req->bp_len != DRV_HWBP_LEN_4)
+			return -EOPNOTSUPP;
+		break;
+	default:
+		return -EOPNOTSUPP;
+	}
+	if (req->pass_through > 1u)
 		return -EOPNOTSUPP;
 	rc = hwbp_validate_overrides(req);
 	if (rc)
@@ -442,11 +471,12 @@ static long hwbp_install(void __user *arg) {
 	rc = hwbp_get_task_mm(pid_ref, &task, &mm);
 	if (rc)
 		goto out_put_pid;
-	rc = hwbp_validate_address(mm, (unsigned long)req.addr);
+	rc = hwbp_validate_address(mm, (unsigned long)req.addr, req.bp_type, req.bp_len);
 	if (rc)
 		goto out_put_task_mm;
 	if (req.pass_through) {
-		rc = hwbp_validate_address(mm, (unsigned long)req.addr + DRV_HWBP_LEN_EXECUTE);
+		/* pass_through is X-only (see normalize); validate the fallthrough insn slot too. */
+		rc = hwbp_validate_address(mm, (unsigned long)req.addr + DRV_HWBP_LEN_4, req.bp_type, req.bp_len);
 		if (rc)
 			goto out_put_task_mm;
 		rc = hwbp_validate_fallthrough(mm, (unsigned long)req.addr);
@@ -490,8 +520,9 @@ static long hwbp_install(void __user *arg) {
 	hwbp_set_overrides(tracker, &req);
 	hw_breakpoint_init(&attr);
 	attr.bp_addr = req.addr;
-	attr.bp_len = DRV_HWBP_LEN_EXECUTE;
-	attr.bp_type = HW_BREAKPOINT_X;
+	attr.bp_len = req.bp_len;
+	/* DRV_HWBP_TYPE_* values are chosen to equal HW_BREAKPOINT_R/W/RW/X — forward as-is. */
+	attr.bp_type = req.bp_type;
 	attr.sample_period = 1;
 	attr.exclude_kernel = 1;
 	attr.exclude_hv = 1;
@@ -505,7 +536,8 @@ static long hwbp_install(void __user *arg) {
 	}
 	list_add_tail(&tracker->node, &hwbp_trackers);
 	mutex_unlock(&hwbp_mutex);
-	LOGI("hwbp: installed pid=%d addr=%px passthrough=%u overrides=%u\n", req.pid, (void *)(uintptr_t)req.addr, req.pass_through, req.override_count);
+	LOGI("hwbp: installed pid=%d addr=%px type=%u len=%u passthrough=%u overrides=%u\n",
+	     req.pid, (void *)(uintptr_t)req.addr, req.bp_type, req.bp_len, req.pass_through, req.override_count);
 	rc = 0;
 
 out_put_task_mm:
