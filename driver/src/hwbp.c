@@ -555,18 +555,16 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 }
 NOKPROBE_SYMBOL(hwbp_handler);
 
-/* Delivers one signal to the tgid's group-leader task. Earlier iterations
- * broke on the first success — that stranded the signal on a blocked leader.
- * Then we iterated every thread, which fixed strandedness but produced N
- * queued copies for RT signals (they don't merge in the kernel — review R2).
- *
- * Compromise: single delivery to the leader. That's the standard Linux
- * signal-to-process convention and matches user expectation (one hit → one
- * signal). Applications that block the signal in the leader thread must
- * unblock it there — same rule as any RT signal target. */
+/* Process-directed delivery (N4): pick a thread whose signal mask does NOT
+ * block sig, and send exactly one si_int-carrying signal there. Falls back
+ * to the group leader if every thread has it blocked — the signal stays
+ * pending on the leader's private queue until it unblocks, same as any
+ * queued process-directed RT signal. That's the shape signal(7) documents,
+ * with the one caveat that send_sig_info can't do PIDTYPE_TGID for us so
+ * we synthesise the target choice by walking t->blocked. */
 static void hwbp_notify_worker(struct work_struct *w) {
 	struct hwbp_notify_work *nw = container_of(w, struct hwbp_notify_work, work);
-	struct task_struct *leader;
+	struct task_struct *leader, *t, *chosen = NULL;
 	struct kernel_siginfo info;
 	int rc = -ESRCH;
 
@@ -582,7 +580,22 @@ static void hwbp_notify_worker(struct work_struct *w) {
 	if (!leader)
 		leader = get_pid_task(nw->pid, PIDTYPE_PID);
 	if (leader) {
-		rc = send_sig_info(nw->signal_no, &info, leader);
+		rcu_read_lock();
+		for_each_thread(leader, t) {
+			bool blocked;
+			unsigned long flags;
+			if (!t->sighand) continue;
+			spin_lock_irqsave(&t->sighand->siglock, flags);
+			blocked = sigismember(&t->blocked, nw->signal_no);
+			spin_unlock_irqrestore(&t->sighand->siglock, flags);
+			if (!blocked) { chosen = t; break; }
+		}
+		if (!chosen)
+			chosen = leader; /* every thread blocks it — queue on leader */
+		get_task_struct(chosen);
+		rcu_read_unlock();
+		rc = send_sig_info(nw->signal_no, &info, chosen);
+		put_task_struct(chosen);
 		put_task_struct(leader);
 	}
 	if (rc)
@@ -608,9 +621,9 @@ out:
 
 /* Deferred one-shot disable for a watchpoint tracker (R1). Called under the
  * global mutex so the perf_event pointer we hand to modify_user_hw_breakpoint
- * can't be freed underneath us. If the tracker was already removed / cleared
- * we silently skip; the debounce flag is meaningless once the tracker is
- * gone. */
+ * can't be freed underneath us. Skips if the tracker was removed, was
+ * already orphaned by another path, or had its pending flag cleared by a
+ * concurrent re-install (N3 — re-arm cancels the queued disable). */
 static void hwbp_wp_disable_worker(struct work_struct *w) {
 	struct hwbp_disable_work *dw = container_of(w, struct hwbp_disable_work, work);
 	struct hwbp_tracker *tr;
@@ -619,6 +632,8 @@ static void hwbp_wp_disable_worker(struct work_struct *w) {
 	list_for_each_entry(tr, &hwbp_trackers, node) {
 		if (tr->tracker_id != dw->tracker_id)
 			continue;
+		if (!READ_ONCE(tr->wp_disable_pending))
+			break; /* re-arm cancelled us */
 		if (tr->bp && !READ_ONCE(tr->orphaned))
 			hwbp_disable_orphaned(tr, tr->bp);
 		WRITE_ONCE(tr->wp_disable_pending, 0u);
@@ -822,23 +837,41 @@ static long hwbp_install(void __user *arg, struct file *owner) {
 	/* Only match against trackers this fd already owns; another client's
 	 * tracker on the same (pid, addr) is left alone and we build our own. */
 	existing = hwbp_lookup_locked(pid_ref, req.addr, owner);
-	if (existing && existing->mm == mm && !READ_ONCE(existing->orphaned)) {
-		if (existing->bp_type != req.bp_type || existing->bp_len != req.bp_len || existing->pass_through != req.pass_through) {
+	if (existing && existing->mm == mm) {
+		if (existing->bp_type != req.bp_type || existing->bp_len != req.bp_len ||
+		    existing->pass_through != req.pass_through) {
 			rc = -EBUSY;
-		} else {
-			/* Update mutable install-time state — flags mask + overrides. */
+			mutex_unlock(&hwbp_mutex);
+			goto out_put_task_mm;
+		}
+		/* Re-arm path (N3): re-installing on an orphaned tracker (either the
+		 * watchpoint one-shot fired and the disable worker has already run,
+		 * OR a worker is still pending) resurrects it in place. That keeps
+		 * every sticky setter's state — notify_pid_ref, sample_every,
+		 * condition, bypass_pid — instead of dropping it on the floor and
+		 * silently recreating the object. */
+		{
+			struct perf_event_attr attr_reenable = existing->bp ? existing->bp->attr
+			                                                    : (struct perf_event_attr){};
+			bool was_orphaned = READ_ONCE(existing->orphaned);
 			existing->flags = req.flags;
 			hwbp_set_overrides(existing, &req);
+			if (was_orphaned && existing->bp) {
+				attr_reenable.disabled = 0;
+				(void)drv_call_modify_user_hw_bp(drv_modify_user_hw_bp_ptr,
+				                                 existing->bp, &attr_reenable);
+				WRITE_ONCE(existing->orphaned, 0u);
+			}
+			/* Cancel any still-pending disable — it would race the re-arm
+			 * and immediately re-orphan the tracker. flush_work runs under
+			 * hwbp_mutex; the worker's list walk skips this tracker while
+			 * we hold the mutex, so no deadlock. */
+			WRITE_ONCE(existing->wp_disable_pending, 0u);
+			existing->sample_counter = 0;
 			rc = 0;
 		}
 		mutex_unlock(&hwbp_mutex);
 		goto out_put_task_mm;
-	}
-	if (existing) {
-		/* Also drops orphaned watchpoint trackers (R1) — client re-install
-		 * is the documented re-arm path for one-shot watchpoints. */
-		list_del(&existing->node);
-		hwbp_unregister_and_free(existing);
 	}
 	tracker = kzalloc(sizeof(*tracker), GFP_KERNEL);
 	if (!tracker) {
@@ -1078,6 +1111,7 @@ static long hwbp_get_caps(void __user *arg) {
 	caps.flags_supported = DRV_HWBP_FLAG_NOTIFY | DRV_HWBP_FLAG_CAPTURE_FP |
 			       DRV_HWBP_FLAG_TIMING_BYPASS;
 	caps.fp_ready = hwbp_fp_ready ? 1u : 0u;
+	caps.abi_generation = DRV_HWBP_ABI_GENERATION;
 	if (copy_to_user(arg, &caps, sizeof(caps)) != 0)
 		return -EFAULT;
 	return 0;
@@ -1351,7 +1385,7 @@ int hwbp_init(void) {
 	BUILD_BUG_ON(sizeof(struct drv_hwbp_reg_override) != 16);
 	BUILD_BUG_ON(sizeof(struct drv_hwbp_install_req) != 192);
 	BUILD_BUG_ON(sizeof(struct drv_hwbp_hit) != 800);
-	BUILD_BUG_ON(sizeof(struct drv_hwbp_caps) != 32);
+	BUILD_BUG_ON(sizeof(struct drv_hwbp_caps) != 40);
 	BUILD_BUG_ON(sizeof(struct drv_hwbp_sample_req) != 24);
 	BUILD_BUG_ON(sizeof(struct drv_hwbp_condition_req) != 32);
 	BUILD_BUG_ON(sizeof(struct drv_hwbp_bypass_req) != 24);
@@ -1384,10 +1418,10 @@ long do_hwbp_cmd(unsigned int cmd, void __user *arg, struct file *owner) {
 	case DRV_CMD_HWBP_INSTALL:       return hwbp_install(arg, owner);
 	case DRV_CMD_HWBP_SET_OVERRIDE:  return hwbp_set_override(arg, owner);
 	case DRV_CMD_HWBP_REMOVE:        return hwbp_remove(arg, owner);
-	case DRV_CMD_HWBP_GET_HITS:      return hwbp_get_hits(arg, owner);
 	case DRV_CMD_HWBP_GET_HITS_LEGACY:
 		/* Wire-incompatible with the 800-byte hit record — refuse loudly
-		 * so an old client can't silently misinterpret the payload (R4). */
+		 * so an old client can't silently misinterpret the payload (R4).
+		 * The new command lives at 0x63 in the ext range (N1). */
 		return -EPROTO;
 	case DRV_CMD_HWBP_CLEAR_ALL:     return hwbp_clear_all(owner);
 	case DRV_CMD_HWBP_GET_CAPS:      return hwbp_get_caps(arg);
@@ -1404,6 +1438,7 @@ long do_hwbp_ext_cmd(unsigned int cmd, void __user *arg, struct file *owner) {
 	case DRV_CMD_HWBP_SET_BYPASS_PID: return hwbp_set_bypass_pid(arg, owner);
 	case DRV_CMD_HWBP_SET_NOTIFY:     return hwbp_set_notify(arg, owner);
 	case DRV_CMD_HWBP_TRANSLATE_BAIT: return hwbp_translate_bait(arg);
+	case DRV_CMD_HWBP_GET_HITS:       return hwbp_get_hits(arg, owner);
 	default:                          return -ENOTTY;
 	}
 }

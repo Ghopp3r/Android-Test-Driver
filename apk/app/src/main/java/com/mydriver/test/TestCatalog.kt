@@ -35,5 +35,6 @@ object TestCatalog {
         TestSpec("S17", "Watchpoint one-shot fire", listOf("S17_wp_oneshot")),
         TestSpec("S18", "Legacy GET_HITS refused", listOf("S18_hits_legacy")),
         TestSpec("S19", "Bait-guard flag deprecated", listOf("S19_bait_deprecated")),
+        TestSpec("S20", "PTE_HOOK routing intact", listOf("S20_pte_routing")),
     )
 }

@@ -493,48 +493,70 @@ void test_pid_hide() {
 }
 
 // ---------------------------------------------------------------------------
-// S14 — fd-scoped cleanup (rewritten for review R7).
-//   Old check ("remove from primary returns error") was undecidable — an
-//   owner mismatch and a missing tracker both yield ENOENT, so the assertion
-//   couldn't distinguish "cleanup happened" from "cleanup silently didn't".
-//   New form: open a second fd, install, remove-via-alt-succeeds proves the
-//   tracker exists under alt's ownership; then close alt, open a THIRD fd,
-//   and confirm the same install succeeds — a stranded tracker on a dead fd
-//   would collide on (pid, addr) with the new install and force EBUSY.
+// S14 — fd-scoped cleanup (rewritten again for review N5).
+//   Owner-scope means two fds can carry independent (pid, addr) trackers
+//   without conflict — so a "third fd installs on same addr" test doesn't
+//   distinguish "cleanup reaped alt's tracker" from "cleanup didn't but the
+//   new tracker just sits alongside". Decidable form: exhaust every HW
+//   execute-BP slot from alt (caps.num_brps installs on distinct addresses),
+//   close alt, then observe that primary can install one more from the same
+//   pid. A slot leak would surface as ENOSPC/EIO on the primary side.
 // ---------------------------------------------------------------------------
+extern "C" __attribute__((noinline)) void s14_slot_0(void) { asm volatile("nop"); }
+extern "C" __attribute__((noinline)) void s14_slot_1(void) { asm volatile("nop"); }
+extern "C" __attribute__((noinline)) void s14_slot_2(void) { asm volatile("nop"); }
+extern "C" __attribute__((noinline)) void s14_slot_3(void) { asm volatile("nop"); }
+extern "C" __attribute__((noinline)) void s14_slot_4(void) { asm volatile("nop"); }
+extern "C" __attribute__((noinline)) void s14_slot_5(void) { asm volatile("nop"); }
+extern "C" __attribute__((noinline)) void s14_slot_6(void) { asm volatile("nop"); }
+extern "C" __attribute__((noinline)) void s14_slot_7(void) { asm volatile("nop"); }
+static uint64_t s14_slots[] = {
+	reinterpret_cast<uint64_t>(&s14_slot_0), reinterpret_cast<uint64_t>(&s14_slot_1),
+	reinterpret_cast<uint64_t>(&s14_slot_2), reinterpret_cast<uint64_t>(&s14_slot_3),
+	reinterpret_cast<uint64_t>(&s14_slot_4), reinterpret_cast<uint64_t>(&s14_slot_5),
+	reinterpret_cast<uint64_t>(&s14_slot_6), reinterpret_cast<uint64_t>(&s14_slot_7),
+};
+
 void test_fd_scoped_cleanup() {
 	driver.hwbp.clearAll();
 	std::printf("[BEGIN] S14_fd_scoped\n");
-	uint64_t addr = reinterpret_cast<uint64_t>(&probe_fn);
+	auto caps = driver.hwbp.caps();
+	if (!caps) { FAIL("S14_fd_scoped", "caps failed"); return; }
+	uint32_t brps = caps->num_brps;
+	if (brps == 0 || brps > 8) {
+		SKIP("S14_fd_scoped", "unusable brps=%u", brps); return;
+	}
 	{
 		Driver alt;
 		if (!alt.open()) { SKIP("S14_fd_scoped", "cannot open alt fd errno=%d", errno); return; }
 		alt.setTarget(getpid());
-		if (!alt.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4)) {
-			FAIL("S14_fd_scoped", "alt install failed errno=%d", errno); return;
+		/* Fill every reported HW slot from alt. */
+		for (uint32_t i = 0; i < brps; ++i) {
+			if (!alt.hwbp.install(s14_slots[i], {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4)) {
+				FAIL("S14_fd_scoped", "alt install #%u failed errno=%d", i, errno); return;
+			}
 		}
-		if (!alt.hwbp.remove(addr)) {
-			FAIL("S14_fd_scoped", "alt remove failed — owner mismatch on same fd?"); return;
-		}
-		if (!alt.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4)) {
-			FAIL("S14_fd_scoped", "alt re-install failed"); return;
-		}
+		/* alt now owns all slots. Verify that: dropping alt returns them. */
 		alt.close();
-		usleep(20000);
+		usleep(50000); /* .release() runs synchronously on close, but give perf teardown a beat */
 	}
-	/* If release() failed to reap the tracker, this install would collide on
-	 * (pid, addr) with a "stuck" tracker owned by a dead fd — and no other
-	 * fd could ever remove it. A fresh install on a third fd succeeding is
-	 * the observable proof that cleanup happened. */
-	Driver alt2;
-	if (!alt2.open()) { SKIP("S14_fd_scoped", "third open failed errno=%d", errno); return; }
-	alt2.setTarget(getpid());
-	if (!alt2.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4)) {
-		FAIL("S14_fd_scoped", "third fd install failed — stale tracker not reaped");
-	} else {
-		alt2.hwbp.remove(addr);
-		PASS("S14_fd_scoped", "release() reaped alt's tracker; third fd installs cleanly");
+	/* Primary must now succeed installing on a NEW address (not one alt used)
+	 * — if release() left even one slot leaked the perf layer starts
+	 * returning ENOSPC by brps+1. A tracker leak on the same address would
+	 * ALSO be visible via the leaked perf event slot count. */
+	driver.setTarget(getpid());
+	uint32_t installed = 0;
+	for (uint32_t i = 0; i < brps; ++i) {
+		if (driver.hwbp.install(s14_slots[i], {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4))
+			++installed;
+		else
+			break;
 	}
+	driver.hwbp.clearAll();
+	if (installed == brps)
+		PASS("S14_fd_scoped", "release() freed all %u HW slots (primary reinstalled every one)", brps);
+	else
+		FAIL("S14_fd_scoped", "primary installed only %u/%u after alt close — slot leak", installed, brps);
 }
 
 // ---------------------------------------------------------------------------
@@ -564,11 +586,14 @@ void test_fd_owner_isolation() {
 	if (!alt.hwbp.clearAll()) {
 		FAIL("S15_fd_owner", "alt.clearAll() returned false"); driver.hwbp.remove(addr); return;
 	}
-	/* And drop alt's own tracker — the follow-up remove() on alt should
-	 * report ENOENT (return false), otherwise clearAll didn't actually
-	 * do what its name says. */
-	if (alt.hwbp.remove(addr)) {
-		FAIL("S15_fd_owner", "alt.remove() succeeded after clearAll — clearAll didn't clear"); return;
+	/* And drop alt's own tracker — remove() must return false AND errno must
+	 * be ENOENT (not just any error). Otherwise clearAll didn't do what its
+	 * name says, or the failure mode is something we haven't accounted for. */
+	errno = 0;
+	if (alt.hwbp.remove(addr) || errno != ENOENT) {
+		FAIL("S15_fd_owner", "alt.remove() after clearAll: got ok=%d errno=%d, expected fail+ENOENT",
+		     (int)alt.hwbp.remove(addr), errno);
+		return;
 	}
 	/* Primary's tracker must survive that. Its remove() should still succeed. */
 	if (!driver.hwbp.remove(addr)) {
@@ -646,7 +671,7 @@ void test_watchpoint_oneshot() {
 //   command number; the new kernel refuses it with a stable errno so the
 //   caller sees the ABI break instead of silently misreading payloads.
 // ---------------------------------------------------------------------------
-void test_legacy_hits_epROTO() {
+void test_legacy_hits_eproto() {
 	std::printf("[BEGIN] S18_hits_legacy\n");
 	drv_ioctl_req req{};
 	req.pid = getpid();
@@ -672,6 +697,37 @@ void test_bait_guard_not_advertised() {
 		FAIL("S19_bait_deprecated", "kernel still advertises BAIT_GUARD flag=0x%x", c->flags_supported);
 	else
 		PASS("S19_bait_deprecated", "BAIT_GUARD dropped; flags_supported=0x%x", c->flags_supported);
+}
+
+// ---------------------------------------------------------------------------
+// S20 — PTE_HOOK_INSTALL is routed to PTE, not HWBP (regression for N1).
+//   Previously HWBP_GET_HITS collided with PTE_HOOK_INSTALL at 0x48 and the
+//   router dispatched PTE traffic into HWBP. The regression: PTE install
+//   must reach its own handler. We deliberately send an install req with a
+//   nonsense addr — PTE handler rejects it with EINVAL (its own validator),
+//   NOT ENOTTY (HWBP router doesn't recognise 0x48 anymore since GET_HITS
+//   moved to 0x63) and NOT EPROTO (legacy-hits code). Any of those errnos
+//   would prove routing is broken.
+// ---------------------------------------------------------------------------
+void test_pte_hook_not_hijacked() {
+	std::printf("[BEGIN] S20_pte_routing\n");
+	drv_pte_hook_install_req req{};
+	req.pid = getpid();
+	req.kind = DRV_PTE_HOOK_CONST_U64;
+	req.addr = 0;               /* invalid — PTE handler must reject */
+	req.ret_value = 0xDEADBEEF;
+	errno = 0;
+	bool ok = driver.rawIoctl(DRV_CMD_PTE_HOOK_INSTALL, &req);
+	int e = errno;
+	if (ok) {
+		FAIL("S20_pte_routing", "PTE install of addr=0 unexpectedly succeeded"); return;
+	}
+	/* PTE handler returns EINVAL/EFAULT for the bad addr; HWBP router would
+	 * return EPROTO (legacy-hits) or ENOTTY (unrecognised cmd). */
+	if (e == EPROTO || e == ENOTTY)
+		FAIL("S20_pte_routing", "PTE_HOOK_INSTALL was routed to HWBP (errno=%d)", e);
+	else
+		PASS("S20_pte_routing", "PTE_HOOK_INSTALL reached PTE handler (errno=%d)", e);
 }
 
 } // anon
@@ -702,8 +758,9 @@ int main() {
 	test_fd_owner_isolation();
 	test_bait_guard_key_stable();
 	test_watchpoint_oneshot();
-	test_legacy_hits_epROTO();
+	test_legacy_hits_eproto();
 	test_bait_guard_not_advertised();
+	test_pte_hook_not_hijacked();
 
 	std::printf("\n== summary: %d PASS, %d FAIL, %d SKIP ==\n", g_passes, g_fails, g_skips);
 	return g_fails ? 1 : 0;

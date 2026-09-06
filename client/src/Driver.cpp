@@ -17,14 +17,11 @@ Driver::~Driver() {
     close();
 }
 
-// The reboot kprobe recognises the magic pair and hands back a new anonymous-inode fd via the fourth syscall argument.
-// After the handshake we try HWBP_GET_CAPS to confirm the kernel's hit / install-req sizes match what this client was
-// compiled against. Behaviour matrix (review R3):
-//   - caps ok, sizes match         → open() returns true, hwbpAvailable() == true
-//   - caps ok, sizes mismatch      → open() returns false with errno = EPROTO (real ABI break)
-//   - caps ioctl returns EOPNOTSUPP or ENOTTY → open() still returns true; hwbpAvailable() == false.
-//     The kernel loaded without HWBP (missing kallsym, unsupported CPU); memory/touch/sensor paths are unaffected.
-//   - any other caps error         → open() fails so the caller sees the raw errno.
+// open() completes the reboot handshake, then negotiates HWBP:
+//   - caps EOPNOTSUPP/ENOTTY   → fd stays open, hwbpAvailable() == false (R3).
+//   - caps abi_generation mismatch OR sizeof mismatch → open() fails, errno = EPROTO
+//     (N2: sizeof alone can't tell 0x43/0x48 command generations apart).
+//   - other caps error         → open() fails with the raw errno.
 bool Driver::open() {
     if (m_fd >= 0) return true;
     int newFd = -1;
@@ -36,13 +33,15 @@ bool Driver::open() {
     drv_hwbp_caps c{};
     if (::ioctl(m_fd, DRV_CMD_HWBP_GET_CAPS, &c) < 0) {
         int err = errno;
-        if (err == EOPNOTSUPP || err == ENOTTY) return true;   // HWBP off, rest of driver still usable
+        if (err == EOPNOTSUPP || err == ENOTTY) return true;
         ::close(m_fd);
         m_fd = -1;
         errno = err;
         return false;
     }
-    if (c.hit_bytes != sizeof(drv_hwbp_hit) || c.install_req_bytes != sizeof(drv_hwbp_install_req)) {
+    if (c.abi_generation != DRV_HWBP_ABI_GENERATION ||
+        c.hit_bytes != sizeof(drv_hwbp_hit) ||
+        c.install_req_bytes != sizeof(drv_hwbp_install_req)) {
         ::close(m_fd);
         m_fd = -1;
         errno = EPROTO;

@@ -8,9 +8,11 @@
 #include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/gfp.h>
+#include <linux/jiffies.h>
 #include <linux/kprobes.h>
 #include <linux/mm.h>
 #include <linux/module.h>
+#include <linux/percpu-defs.h>
 #include <linux/printk.h>
 #include <linux/sched.h>
 #include <linux/sched/mm.h>
@@ -157,6 +159,18 @@ static void drv_queue_fd_install(void __user *reply, const char *source) {
 
 int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs) {
 	unsigned long args[4];
+	/* Per-CPU debounce for E1: __arm64_sys_reboot is reachable from both the
+	 * syscall wrapper and the direct SYSCALL_DEFINE4 stub, and on some KMIs
+	 * (e.g. KernelSU-patched) the same magic-pair call trips this pre-handler
+	 * twice in quick succession. We only need one fd per userspace
+	 * syscall(reboot) invocation. Two args-identical hits within a jiffy
+	 * from the same task are treated as the same event; we drop the second. */
+	static DEFINE_PER_CPU(pid_t, last_pid);
+	static DEFINE_PER_CPU(unsigned long, last_reply);
+	static DEFINE_PER_CPU(unsigned long, last_jiffies);
+	pid_t *lp;
+	unsigned long *lr;
+	unsigned long *lj;
 
 	(void)p;
 
@@ -173,12 +187,20 @@ int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs) {
 			return 0;
 		if ((u32)args[0] != COMM_REBOOT_MAGIC1 || (u32)args[1] != COMM_REBOOT_MAGIC2)
 			return 0;
-		drv_queue_fd_install((void __user *)args[3], "reboot/ptregs");
-		return 0;
 	}
 
-	drv_queue_fd_install((void __user *)args[3], "reboot");
+	lp = this_cpu_ptr(&last_pid);
+	lr = this_cpu_ptr(&last_reply);
+	lj = this_cpu_ptr(&last_jiffies);
+	if (*lp == current->pid && *lr == args[3] &&
+	    time_before_eq(jiffies, *lj + 1)) {
+		return 0;   /* duplicate arm64 wrapper hit */
+	}
+	*lp = current->pid;
+	*lr = args[3];
+	*lj = jiffies;
 
+	drv_queue_fd_install((void __user *)args[3], "reboot");
 	return 0;
 }
 
@@ -548,6 +570,19 @@ static long do_input_cmd(unsigned int cmd, void __user *arg) {
 		return 0;
 	}
 }
+
+/* Compile-time guarantee that no two command ranges overlap — the router
+ * checks HWBP first, and a stray shared number (e.g. old 0x48 GET_HITS
+ * colliding with PTE_HOOK_INSTALL — review N1) would silently steer PTE
+ * traffic into HWBP without any C error. Kept in the same translation unit
+ * as the router so an accidental UAPI edit trips the build immediately. */
+_Static_assert(DRV_CMD_HWBP_RANGE_LAST < DRV_CMD_PTE_HOOK_RANGE_FIRST,
+               "HWBP primary range overlaps PTE_HOOK range");
+_Static_assert(DRV_CMD_PTE_HOOK_RANGE_LAST < DRV_CMD_HWBP_EXT_RANGE_FIRST,
+               "PTE_HOOK range overlaps HWBP extended range");
+_Static_assert(DRV_CMD_HWBP_INSTALL != DRV_CMD_PTE_HOOK_INSTALL &&
+               DRV_CMD_HWBP_GET_HITS != DRV_CMD_PTE_HOOK_INSTALL,
+               "HWBP command collides with PTE_HOOK_INSTALL");
 
 static long dispatch_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) {
 	void __user *uarg = (void __user *)arg;

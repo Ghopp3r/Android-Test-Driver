@@ -81,7 +81,7 @@ Feature flags (bitmask in `install(...flags)`):
 | Flag | Bit | Effect |
 | --- | ---: | --- |
 | `DRV_HWBP_FLAG_BAIT_GUARD` | 0x1 | **Deprecated.** Historically redirected `addr` via `translate_bait`, but the silent rewrite hid the real tracker key from the caller. Now accepted for source-compat and silently dropped; call `DRV_CMD_HWBP_TRANSLATE_BAIT` explicitly and pass the resolved address to `install`. |
-| `DRV_HWBP_FLAG_NOTIFY` | 0x2 | Deliver `signal_no` (default 43 — safely past Bionic's 32..34/40/41 reservations) to `notify_pid` on hit; `si_int` carries the tracker id. Delivered to the group-leader task only (one hit → one signal). |
+| `DRV_HWBP_FLAG_NOTIFY` | 0x2 | Deliver `signal_no` (default 43 — safely past Bionic's 32..34/40/41 reservations) to `notify_pid` on hit; `si_int` carries the tracker id. Delivered process-directed: picks the first thread whose signal mask does not block `sig`, otherwise falls back to the group leader (signal stays pending until unblocked, same as any queued RT signal). |
 | `DRV_HWBP_FLAG_CAPTURE_FP` | 0x4 | Fill `q_lo/q_hi/fpsr/fpcr` in every hit record from `current->thread.uw.fpsimd_state`. |
 | `DRV_HWBP_FLAG_TIMING_BYPASS` | 0x8 | Skip ring push + signal delivery on hit — overrides still applied. Reduces observable per-hit overhead to the perf overflow path. |
 
@@ -93,7 +93,7 @@ Per-tracker gates (each set via its own ioctl after install):
 - `SET_NOTIFY({notify_pid, signal_no})` — mutable signal target; `signal_no=0` picks the kernel default (43).
 - `TRANSLATE_BAIT(addr)` — returns the LARGEST same-basename VMA cluster address for `addr` without installing anything; useful for probing an AC mapping layout ahead of `install`.
 
-HWBP command range: primary `0x40..0x48` (INSTALL, REMOVE, SET_OVERRIDE, GET_HITS_LEGACY [refused with `EPROTO`], CLEAR_ALL, GET_CAPS, SET_SAMPLE, SET_CONDITION, GET_HITS 800-byte); extended `0x60..0x62` (SET_BYPASS_PID, SET_NOTIFY, TRANSLATE_BAIT). `GET_CAPS` returns `{num_brps, num_wrps, ring_slots, max_overrides, hit_bytes, install_req_bytes, flags_supported, fp_ready}` from `ID_AA64DFR0_EL1` — use it to feature-detect before install.
+HWBP command range: primary `0x40..0x47` (INSTALL, REMOVE, SET_OVERRIDE, GET_HITS_LEGACY [refused with `EPROTO`], CLEAR_ALL, GET_CAPS, SET_SAMPLE, SET_CONDITION); extended `0x60..0x63` (SET_BYPASS_PID, SET_NOTIFY, TRANSLATE_BAIT, GET_HITS 800-byte at 0x63). GET_HITS lives in the extended range to avoid a former collision with `PTE_HOOK_INSTALL = 0x48` (review N1). `GET_CAPS` returns `{num_brps, num_wrps, ring_slots, max_overrides, hit_bytes, install_req_bytes, flags_supported, fp_ready, abi_generation}` — clients must confirm `abi_generation == DRV_HWBP_ABI_GENERATION` (currently 2), not just sizeof matches (review N2).
 
 `driver.pteHook` installs a 32-byte constant-return stub in a private executable mapping. `returnConst<T>()` supports integral, enum, pointer, float, and double values; `returnVoid()` emits only a return. Stub starts with a BTI-compatible landing, validates one complete same-page private VMA, and records expected patched bytes. Reinstall, remove, and `clearAll()` refuse to overwrite a changed function.
 
@@ -187,8 +187,9 @@ Per-feature runtime confirmation on NP05J (Android 15 / kernel 6.6.56-android15-
 | S17 | watchpoint one-shot fire | PASS | W-BP on `g_probe_word` records a hit, then auto-disables so a second store records nothing |
 | S18 | legacy GET_HITS refused | PASS | old 0x43 ioctl returns `EPROTO` — stale clients get an authoritative ABI-break signal |
 | S19 | BAIT_GUARD dropped from caps | PASS | `caps.flags_supported` no longer advertises the deprecated bit |
+| S20 | PTE_HOOK routing intact | PASS | regression for N1 — `DRV_CMD_PTE_HOOK_INSTALL` reaches the PTE handler, not HWBP |
 
-**Summary: 26 PASS / 0 FAIL / 0 SKIP on `android15-6.6` (NP05J).** The suite explicitly covers watchpoint fire+auto-disable (R1), ABI break signalling (R4), deprecated-flag handling (R5), and fd owner cleanup (R7). Signal delivery (R2) is single-target to the group leader — one hit ⇒ one signal, standard Linux convention. Client's `open()` is now HWBP-graceful (R3): kernels without HWBP still open the fd for memory/touch/sensor paths.
+**Summary: 27 PASS / 0 FAIL / 0 SKIP on `android15-6.6` (NP05J).** Covers R1..R7 + N1..N5 review items: HWBP command range no longer collides with PTE (N1), `abi_generation` is negotiated at open (N2), re-install on an orphaned tracker resurrects it in place and preserves every sticky setter's state (N3), notify picks the first thread with the signal unblocked and falls back to leader as pending (N4, standard process-directed shape), S14 exhausts every HW slot from `alt` and confirms release() reclaims all of them (N5), and `reboot_handler_pre` debounces the duplicate arm64-wrapper hit that produced two handshake events per `open()` (E1).
 
 ## Layout
 

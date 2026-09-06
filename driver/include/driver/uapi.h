@@ -79,33 +79,34 @@ enum drv_cmd {
 	DRV_CMD_HWBP_INSTALL = 0x40,
 	DRV_CMD_HWBP_REMOVE = 0x41,
 	DRV_CMD_HWBP_SET_OVERRIDE = 0x42,
-	/* 0x43 was DRV_CMD_HWBP_GET_HITS with the 280-byte drv_hwbp_hit layout;
-	 * the new hit record is 800 bytes (adds FPSIMD state). Kernels built
-	 * against this UAPI reject 0x43 with -EPROTO so a stale client that
-	 * carried the old struct sizeof gets an authoritative error instead of
-	 * silently misreading the payload (review R4). */
+	/* 0x43 previously held DRV_CMD_HWBP_GET_HITS with a 280-byte hit record.
+	 * The record now carries FPSIMD state and is 800 bytes; the new value
+	 * lives in the extended range (0x63). Kernels built against this UAPI
+	 * reject the old number with -EPROTO so a stale client sees an
+	 * authoritative ABI break instead of misreading the payload (review R4). */
 	DRV_CMD_HWBP_GET_HITS_LEGACY = 0x43,
 	DRV_CMD_HWBP_CLEAR_ALL = 0x44,
 	DRV_CMD_HWBP_GET_CAPS = 0x45,
 	DRV_CMD_HWBP_SET_SAMPLE = 0x46,
 	DRV_CMD_HWBP_SET_CONDITION = 0x47,
-	DRV_CMD_HWBP_GET_HITS = 0x48,          /* 800-byte hit records */
 	DRV_CMD_HWBP_RANGE_FIRST = DRV_CMD_HWBP_INSTALL,
-	DRV_CMD_HWBP_RANGE_LAST = DRV_CMD_HWBP_GET_HITS,
-
-	/* Extended HWBP commands placed after PTE + hide ranges to keep the
-	 * primary HWBP range contiguous. */
-	DRV_CMD_HWBP_SET_BYPASS_PID = 0x60,
-	DRV_CMD_HWBP_SET_NOTIFY = 0x61,
-	DRV_CMD_HWBP_TRANSLATE_BAIT = 0x62,
-	DRV_CMD_HWBP_EXT_RANGE_FIRST = DRV_CMD_HWBP_SET_BYPASS_PID,
-	DRV_CMD_HWBP_EXT_RANGE_LAST = DRV_CMD_HWBP_TRANSLATE_BAIT,
+	DRV_CMD_HWBP_RANGE_LAST = DRV_CMD_HWBP_SET_CONDITION,
 
 	DRV_CMD_PTE_HOOK_INSTALL = 0x48,
 	DRV_CMD_PTE_HOOK_REMOVE = 0x49,
 	DRV_CMD_PTE_HOOK_CLEAR_ALL = 0x4A,
 	DRV_CMD_PTE_HOOK_RANGE_FIRST = DRV_CMD_PTE_HOOK_INSTALL,
 	DRV_CMD_PTE_HOOK_RANGE_LAST = DRV_CMD_PTE_HOOK_CLEAR_ALL,
+
+	/* Extended HWBP commands placed after PTE + hide ranges to keep the
+	 * primary HWBP range contiguous. GET_HITS lives here so its new 800-byte
+	 * record has a fresh command number instead of colliding with PTE (N1). */
+	DRV_CMD_HWBP_SET_BYPASS_PID = 0x60,
+	DRV_CMD_HWBP_SET_NOTIFY = 0x61,
+	DRV_CMD_HWBP_TRANSLATE_BAIT = 0x62,
+	DRV_CMD_HWBP_GET_HITS = 0x63,          /* 800-byte hit records, ABI gen 2 */
+	DRV_CMD_HWBP_EXT_RANGE_FIRST = DRV_CMD_HWBP_SET_BYPASS_PID,
+	DRV_CMD_HWBP_EXT_RANGE_LAST = DRV_CMD_HWBP_GET_HITS,
 
 	/* PID concealment (up to HIDE_TASK_MAX_SLOTS slots; see hide_task.h). */
 	DRV_CMD_HIDE_PID_ADD = 0x50,
@@ -236,6 +237,12 @@ struct drv_hwbp_hit {
 	__u32 fpcr;
 };
 
+/* ABI generation bumped whenever wire format or command numbers change in a
+ * way sizeof-checks alone can't catch. Client refuses open() unless its
+ * compiled generation matches the kernel's. gen 2 = 800-byte hit records +
+ * GET_HITS relocated to 0x63 (out of the PTE collision). */
+#define DRV_HWBP_ABI_GENERATION 2u
+
 struct drv_hwbp_caps {
 	__u32 num_brps;         /* execute slots reported by ID_AA64DFR0_EL1.BRPs */
 	__u32 num_wrps;         /* watchpoint slots reported by ID_AA64DFR0_EL1.WRPs */
@@ -245,6 +252,8 @@ struct drv_hwbp_caps {
 	__u32 install_req_bytes;/* sizeof(struct drv_hwbp_install_req) */
 	__u32 flags_supported;  /* DRV_HWBP_FLAG_* mask this build understands */
 	__u32 fp_ready;         /* 1 if FPSIMD helpers were resolved at init */
+	__u32 abi_generation;   /* == DRV_HWBP_ABI_GENERATION of the running module */
+	__u32 _reserved;
 };
 
 struct drv_hwbp_sample_req {
