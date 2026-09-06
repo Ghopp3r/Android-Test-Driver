@@ -175,15 +175,17 @@ Per-feature runtime confirmation on NP05J (Android 15 / kernel 6.6.56-android15-
 | S5 | bypass_pid one-shot | PASS | `baseline=2 bypassed=1 (Δ=1)` |
 | S6 | sample gate (every=3) | PASS | `baseline=6 gated=2` |
 | S7 | conditional trigger `X0 == 42` | PASS | `baseline=3 gated=1` |
-| S8 | async notify (sig 40, si_int=bp_id) | PASS | `signal 40 received si_int=12` — kernel `for_each_thread` iteration + SIGINFO handler |
+| S8 | async notify (sig 42, si_int=bp_id) | PASS | `signal 42 received si_int=12` — every thread in tgid gets the signal, so a blocked group leader can't strand it |
 | S9 | FPSIMD Q0 capture | PASS | `Q0 = cafef00ddeadbeef:0123456789abcdef` — primed pattern intact in ring |
-| S10 | translate_bait roundtrip | PASS | ioctl returns valid mapping |
-| S11 | timing detector | PASS | `base=0.9ns hwbp=280.9ns timing_bypass=124.7ns (299× → 133×)` |
-| S12 | file/dir name hide via filldir64 | PASS | marker vanishes from `ls /data/local/tmp/` |
+| S10 | translate_bait roundtrip | PASS | ioctl returns valid mapping (install no longer silently mutates the key) |
+| S11 | timing detector | PASS | `base=3.6ns hwbp=1013.8ns timing_bypass=601.7ns (278× → 165×)` |
+| S12 | file/dir name hide via filldir64 | PASS | marker vanishes from `ls /data/local/tmp/` (version-gated bool contract) |
 | S13 | PID hide via filldir64 | PASS | child pid vanishes from /proc |
 | S14 | fd-scoped tracker cleanup | PASS | alt fd close reclaims trackers |
+| S15 | fd owner isolation | PASS | two clients on the same (pid, addr) get independent trackers; `clearAll` on one leaves the other alone |
+| S16 | BAIT_GUARD tracker key stable | PASS | install(BAIT_GUARD) followed by remove(addr) succeeds — no hidden address rewrite |
 
-**Summary: 21 PASS / 0 FAIL / 0 SKIP on `android15-6.6` (NP05J).** Every HWBP flag (`ENABLED`, `CAPTURE_FP`, `TIMING_BYPASS`, `BAIT_GUARD`, `NOTIFY`) and every gate (`bypass_pid`, `SAMPLE`, `CONDITION`) is runtime-verified end-to-end, including the async signal path.
+**Summary: 23 PASS / 0 FAIL / 0 SKIP on `android15-6.6` (NP05J).** Every HWBP flag and gate is runtime-verified, plus the two review-driven regressions (fd isolation, tracker-key stability).
 
 ## Layout
 
