@@ -562,17 +562,14 @@ static void hwbp_notify_worker(struct work_struct *w) {
 		leader = get_pid_task(nw->pid, PIDTYPE_PID);
 	if (leader) {
 		rcu_read_lock();
-		/* lock_task_sighand handles the release_task() race on t->sighand. */
+		/* Threads live for the duration of rcu_read_lock; blocked is sigset_t
+		 * (unsigned long[]) read atomically per word. A concurrent
+		 * sys_sigprocmask taking siglock can flip the bit under us — worst
+		 * case we pick a thread that has just started blocking the signal,
+		 * and the signal stays pending on it. Same outcome as picking the
+		 * group leader when nothing is available; not a UAF. */
 		for_each_thread(leader, t) {
-			unsigned long flags;
-			bool blocked;
-			struct sighand_struct *sh = lock_task_sighand(t, &flags);
-
-			if (!sh)
-				continue;
-			blocked = sigismember(&t->blocked, nw->signal_no);
-			unlock_task_sighand(t, &flags);
-			if (!blocked) {
+			if (!sigismember(&t->blocked, nw->signal_no)) {
 				chosen = t;
 				break;
 			}
