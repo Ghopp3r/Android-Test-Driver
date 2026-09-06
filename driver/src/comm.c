@@ -584,7 +584,7 @@ static long dispatch_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigne
 		return do_hwbp_cmd(cmd, uarg, filp);
 
 	if (cmd >= DRV_CMD_HWBP_EXT_RANGE_FIRST && cmd <= DRV_CMD_HWBP_EXT_RANGE_LAST)
-		return do_hwbp_ext_cmd(cmd, uarg);
+		return do_hwbp_ext_cmd(cmd, uarg, filp);
 
 	if (cmd >= DRV_CMD_PTE_HOOK_RANGE_FIRST && cmd <= DRV_CMD_PTE_HOOK_RANGE_LAST)
 		return do_pte_hook_cmd(cmd, uarg);

@@ -129,7 +129,6 @@ long hide_kgsl_by_pid(void *kgsl_driver, int target_pid) {
 static struct kprobe kp_kgsl_sysfs;
 static struct kprobe kp_kgsl_debugfs;
 static struct kprobe kp_sysfs_create_group;
-static struct kprobe kp_kobject_init_and_add;
 static bool proactive_armed;
 
 /* Skip original + return -ENOMEM (all targeted callers return int). */
@@ -167,22 +166,11 @@ static int sysfs_create_group_pre(struct kprobe *p, struct pt_regs *regs) {
 	return 1;
 }
 
-/* D.1: covers direct kobject_init_and_add creations that skip sysfs_create_group. */
-static int kobject_init_and_add_pre(struct kprobe *p, struct pt_regs *regs) {
-	struct kobject *kobj;
-	struct kobject *parent;
-
-	(void)p;
-	if (!regs) return 0;
-	if (!hide_task_contains((pid_t)current->tgid)) return 0;
-
-	kobj = (struct kobject *)regs->regs[0];
-	parent = (struct kobject *)regs->regs[2];
-	if (!kobj_parent_chain_is_kgsl(kobj) && !kobj_parent_chain_is_kgsl(parent))
-		return 0;
-	spoof_enomem_and_skip(regs);
-	return 1;
-}
+/* D.1 (kobject_init_and_add hook) was removed: the target function initialises
+ * the kobject before it can fail, and every caller assumes a subsequent
+ * kobject_put is safe. Returning -ENOMEM before that init would hand back an
+ * uninitialised kobject to the caller's cleanup path (bug #5). The three
+ * remaining probes already cover the KGSL /sys/class/kgsl entry creation. */
 
 static int arm_one(struct kprobe *kp, const char *name, kprobe_pre_handler_t handler) {
 	unsigned long addr;
@@ -208,10 +196,6 @@ int kgsl_stealth_arm(void) {
 	if (rc) { unregister_kprobe(&kp_kgsl_sysfs); return rc; }
 	rc = arm_one(&kp_sysfs_create_group, "sysfs_create_group", sysfs_create_group_pre);
 	if (rc) { unregister_kprobe(&kp_kgsl_sysfs); unregister_kprobe(&kp_kgsl_debugfs); return rc; }
-	/* D.1: non-fatal — the other three probes already cover the common creation paths. */
-	rc = arm_one(&kp_kobject_init_and_add, "kobject_init_and_add", kobject_init_and_add_pre);
-	if (rc)
-		LOGW("kgsl stealth: kobject_init_and_add unavailable; continuing without it\n");
 	proactive_armed = true;
 	return 0;
 }

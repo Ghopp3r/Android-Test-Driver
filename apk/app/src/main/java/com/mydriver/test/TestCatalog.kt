@@ -30,5 +30,7 @@ object TestCatalog {
         TestSpec("S12", "File listing check", listOf("S12_file_hide")),
         TestSpec("S13", "Process listing check", listOf("S13_pid_hide")),
         TestSpec("S14", "File descriptor ownership", listOf("S14_fd_scoped")),
+        TestSpec("S15", "Fd owner isolation", listOf("S15_fd_owner")),
+        TestSpec("S16", "Bait-guard tracker key", listOf("S16_bait_key")),
     )
 }

@@ -17,13 +17,32 @@ Driver::~Driver() {
     close();
 }
 
-// The reboot kprobe recognizes the magic pair and returns a new anonymous-inode fd through the fourth syscall argument.
+// The reboot kprobe recognises the magic pair and hands back a new anonymous-inode fd via the fourth syscall argument.
+// After the handshake we call HWBP_GET_CAPS to confirm the kernel's hit / install-req sizes match what this client
+// was built against. A mismatch means we've been dropped onto a driver of a different UAPI generation — bailing out
+// with EPROTO is safer than misinterpreting every subsequent GET_HITS payload (bug #6).
 bool Driver::open() {
     if (m_fd >= 0) return true;
     int newFd = -1;
     ::syscall(SYS_reboot, DRIVER_REBOOT_MAGIC1, DRIVER_REBOOT_MAGIC2, 0L, &newFd);
-    if (newFd >= 0) { m_fd = newFd; return true; }
-    return false;
+    if (newFd < 0) return false;
+    m_fd = newFd;
+
+    drv_hwbp_caps c{};
+    if (::ioctl(m_fd, DRV_CMD_HWBP_GET_CAPS, &c) < 0) {
+        int err = errno;
+        ::close(m_fd);
+        m_fd = -1;
+        errno = err;
+        return false;
+    }
+    if (c.hit_bytes != sizeof(drv_hwbp_hit) || c.install_req_bytes != sizeof(drv_hwbp_install_req)) {
+        ::close(m_fd);
+        m_fd = -1;
+        errno = EPROTO;
+        return false;
+    }
+    return true;
 }
 
 void Driver::close() {

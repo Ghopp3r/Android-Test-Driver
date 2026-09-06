@@ -173,7 +173,7 @@ struct drv_input_event {
 /* Per-tracker install flags. `flags` field is reused from the historical `_pad`
  * slot of drv_hwbp_install_req — zero means legacy behaviour. */
 #define DRV_HWBP_FLAG_BAIT_GUARD (1u << 0)   /* redirect addr via translate_bait */
-#define DRV_HWBP_FLAG_NOTIFY (1u << 1)       /* deliver SIGRTMIN+1 to notify_pid on hit */
+#define DRV_HWBP_FLAG_NOTIFY (1u << 1)       /* deliver signal_no (default 43) to notify_pid on hit */
 #define DRV_HWBP_FLAG_CAPTURE_FP (1u << 2)   /* capture FPSIMD state (Q0..Q31) in hit ring */
 #define DRV_HWBP_FLAG_TIMING_BYPASS (1u << 3) /* skip ring push & signal to eliminate observable latency */
 
@@ -263,9 +263,11 @@ struct drv_hwbp_bypass_req {
 
 struct drv_hwbp_notify_req {
 	__s32 pid;
-	__s32 notify_pid;   /* recipient of SIGRTMIN+1; 0 = disable */
+	__s32 notify_pid;   /* recipient; 0 = disable notifications for this tracker */
 	__u64 addr;
-	__u32 signal_no;    /* 0 = default SIGRTMIN+1 (34) */
+	/* signal_no: 0 → kernel default (43, past Bionic's 32..34 + 40/41 reserved
+	 * range). Explicit choices should stay ≥ 42 (SIGRTMIN+8..SIGRTMAX-4). */
+	__u32 signal_no;
 	__u32 _pad;
 };
 

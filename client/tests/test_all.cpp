@@ -291,8 +291,10 @@ void test_notify() {
 	driver.hwbp.clearAll();
 	std::printf("[BEGIN] S8_notify\n");
 
-	/* Bionic reserves signals 32..34 for libc internals; 40 is safely past that window. */
-	const int SIG = 40;
+	/* Bionic reserves 32..34 (libc) and 40 (android_run_on_all_threads, A15) /
+	 * 41 (A16). Pick 42 — first RT-signal outside every documented reserved
+	 * slot, well below SIGRTMAX=64. */
+	const int SIG = 42;
 	g_sig_int.store(0, std::memory_order_release);
 
 	/* Handler + poll — bionic's sigtimedwait on the main thread can miss its own private pending. */
@@ -513,6 +515,58 @@ void test_fd_scoped_cleanup() {
 	else FAIL("S14_fd_scoped", "tracker still present — cleanup missed");
 }
 
+// ---------------------------------------------------------------------------
+// S15 — fd owner isolation (regression for review finding #7).
+//   Two clients on the same (pid, addr) must get two independent trackers;
+//   remove/clearAll on one must not touch the other.
+// ---------------------------------------------------------------------------
+void test_fd_owner_isolation() {
+	driver.hwbp.clearAll();
+	std::printf("[BEGIN] S15_fd_owner\n");
+	Driver alt;
+	if (!alt.open()) { SKIP("S15_fd_owner", "cannot open second fd errno=%d", errno); return; }
+	driver.setTarget(getpid());
+	alt.setTarget(getpid());
+	uint64_t addr = reinterpret_cast<uint64_t>(&probe_fn);
+
+	if (!driver.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4)) {
+		FAIL("S15_fd_owner", "primary install failed"); return;
+	}
+	if (!alt.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4)) {
+		FAIL("S15_fd_owner", "secondary install failed");
+		driver.hwbp.remove(addr); return;
+	}
+
+	// clearAll on secondary must leave primary's tracker intact.
+	alt.hwbp.clearAll();
+	drv_ioctl_req probe_req{}; probe_req.pid = getpid(); probe_req.addr = addr;
+	bool primary_alive = driver.rawIoctl(DRV_CMD_HWBP_REMOVE, &probe_req);
+	if (!primary_alive) {
+		FAIL("S15_fd_owner", "secondary's clearAll wiped the primary tracker"); return;
+	}
+	PASS("S15_fd_owner", "two clients isolated; secondary clearAll left primary intact");
+}
+
+// ---------------------------------------------------------------------------
+// S16 — BAIT_GUARD no longer mutates the tracker key (regression for #11/#12).
+//   Install with BAIT_GUARD; the returned addr is exactly what we passed and
+//   remove(addr) on the same value succeeds.
+// ---------------------------------------------------------------------------
+void test_bait_guard_key_stable() {
+	driver.hwbp.clearAll();
+	std::printf("[BEGIN] S16_bait_key\n");
+	driver.setTarget(getpid());
+	uint64_t addr = reinterpret_cast<uint64_t>(&probe_fn);
+	if (!driver.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4,
+	                         DRV_HWBP_FLAG_BAIT_GUARD)) {
+		FAIL("S16_bait_key", "install(BAIT_GUARD) failed errno=%d", errno); return;
+	}
+	if (!driver.hwbp.remove(addr))
+		FAIL("S16_bait_key", "remove(addr) failed — kernel rewrote the tracker key");
+	else
+		PASS("S16_bait_key", "tracker key equals installed addr");
+}
+
 } // anon
 
 int main() {
@@ -538,6 +592,8 @@ int main() {
 	test_file_hide();
 	test_pid_hide();
 	test_fd_scoped_cleanup();
+	test_fd_owner_isolation();
+	test_bait_guard_key_stable();
 
 	std::printf("\n== summary: %d PASS, %d FAIL, %d SKIP ==\n", g_passes, g_fails, g_skips);
 	return g_fails ? 1 : 0;
