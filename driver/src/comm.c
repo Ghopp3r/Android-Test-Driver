@@ -157,25 +157,18 @@ static void drv_queue_fd_install(void __user *reply, const char *source) {
 	}
 }
 
+/* Drop duplicate handshake hits from arm64 syscall wrappers within 4 jiffies. */
 int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs) {
-	unsigned long args[4];
-	/* Global debounce for E1: __arm64_sys_reboot is reachable from multiple
-	 * entry paths (direct SYSCALL_DEFINE4 stub, arm64 syscall wrapper,
-	 * KernelSU-patched hop) so one userspace syscall(reboot) triggers this
-	 * pre-handler 2..3 times within microseconds — potentially on different
-	 * CPUs, which is why per-CPU state failed. Under a global spinlock we
-	 * remember (pid, reply_ptr) of the last real handshake and drop any
-	 * duplicate arriving within 4 jiffies. The user's fd is returned only
-	 * once per syscall. */
 	static DEFINE_SPINLOCK(handshake_dedup_lock);
 	static pid_t last_pid;
 	static unsigned long last_reply;
 	static unsigned long last_jiffies;
+
+	unsigned long args[4];
 	unsigned long flags;
 	bool duplicate;
 
 	(void)p;
-
 	if (!regs)
 		return 0;
 
@@ -575,11 +568,7 @@ static long do_input_cmd(unsigned int cmd, void __user *arg) {
 	}
 }
 
-/* Compile-time guarantee that no two command ranges overlap — the router
- * checks HWBP first, and a stray shared number (e.g. old 0x48 GET_HITS
- * colliding with PTE_HOOK_INSTALL — review N1) would silently steer PTE
- * traffic into HWBP without any C error. Kept in the same translation unit
- * as the router so an accidental UAPI edit trips the build immediately. */
+/* Router checks HWBP first; break the build if any command range overlaps. */
 _Static_assert(DRV_CMD_HWBP_RANGE_LAST < DRV_CMD_PTE_HOOK_RANGE_FIRST,
                "HWBP primary range overlaps PTE_HOOK range");
 _Static_assert(DRV_CMD_PTE_HOOK_RANGE_LAST < DRV_CMD_HWBP_EXT_RANGE_FIRST,

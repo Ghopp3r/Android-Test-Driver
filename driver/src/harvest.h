@@ -9,9 +9,9 @@
 
 /* 32-byte stride observed in both handlers; slot is in-use when key != 0. */
 struct wz_hero_slot {
-	u64 key;     /* X9 from faulting regs (sign-key) */
-	u64 val1;    /* X8 */
-	u64 val2;    /* X2 */
+	u64 key; /* X9 from faulting regs (sign-key) */
+	u64 val1; /* X8 */
+	u64 val2; /* X2 */
 	u64 _pad;
 };
 
@@ -19,10 +19,7 @@ struct wz_hero_slot {
 #define WZ_TARGET_PKG "cent.tmgp.sgame"
 #define WZ_ESR_LOW12 0x1F4u
 
-/* Both harvest entry points are kprobe pre_handlers.  We probe do_mem_abort
- * (not do_page_fault, which is __kprobes-blacklisted) — same signature, same
- * arg layout (X0=far, X1=esr, X2=inner pt_regs *), and do_mem_abort dispatches
- * to do_page_fault unconditionally on arm64 so coverage is identical. */
+/* Probe do_mem_abort (do_page_fault is __kprobes-blacklisted); identical arg layout X0=far/X1=esr/X2=inner pt_regs. */
 int do_mem_abort_pre(struct kprobe *p, struct pt_regs *regs);
 int arm64_force_sig_fault_pre(struct kprobe *p, struct pt_regs *regs);
 

@@ -119,7 +119,7 @@ public:
         Driver& m_d;
     };
 
-    /* Directory-entry basename hider (16 slots, ≤63 chars). Shares kprobe with HidePid. */
+    // Basename hider — 16 slots, ≤63 chars. Shares kprobe with HidePid.
     class HideName {
     public:
         HideName(Driver& d) : m_d(d) {}
@@ -138,10 +138,9 @@ public:
     bool open();
     void close();
     bool isOpen() const { return m_fd >= 0; }
-    /* True when the kernel exposes HWBP and its ABI sizes match this build.
-     * False after a successful open() means memory/touch/sensor still work
-     * but every hwbp.* call will fail — the caller can decide whether to
-     * proceed with a degraded feature set. */
+    // True when kernel exposes HWBP and ABI sizes match this build.
+    // False after open() means memory/touch/sensor still work but every hwbp.* call will fail.
+    // Caller decides whether to proceed with the degraded feature set.
     bool hwbpAvailable() const { return m_hwbpAvailable; }
     void setTarget(pid_t pid) { m_targetPid = pid; }
     pid_t target() const { return m_targetPid; }
@@ -161,7 +160,7 @@ public:
     HidePid hidePid;
     HideName hideName;
 
-    /* Escape hatch for tests + untyped ioctls; true iff ioctl returned >= 0. */
+    // Escape hatch for tests + untyped ioctls; true iff ioctl returned >= 0.
     bool rawIoctl(unsigned int cmd, void* arg) { return doIoctlRaw(cmd, arg) >= 0; }
 
 private:

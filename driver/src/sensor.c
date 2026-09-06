@@ -28,9 +28,9 @@
 #include "log.h"
 #include "sensor.h"
 
-/* x0 is const Event&, not sensors_event_t*. HIDL uses an untagged payload at
- * +0x10; the fixed-size AIDL union stores its tag at +0x10 and its aligned
- * value at +0x18. Both Event forms keep SensorType at +0x0c. */
+/* x0 is const Event&, not sensors_event_t*. */
+/* HIDL: untagged payload at +0x10. AIDL: tag at +0x10, aligned value at +0x18. */
+/* Both keep SensorType at +0x0c. */
 struct sensor_abi_layout {
 	u8 type_off;
 	u8 data_off;
@@ -109,8 +109,8 @@ static int drv_uprobe_register(struct inode *inode, loff_t offset, struct uprobe
 }
 #endif
 
-/* Pure-integer IEEE-754 binary32 add; kernel FPSIMD unavailable in uprobe pre-handler. */
-/* Quirks preserved: NaN -> +qNaN 0x7FFFFFFF, exact cancellation -> +0, RNE, implicit-1 at bit 30. */
+/* Pure-integer IEEE-754 binary32 add; kernel FPSIMD is off-limits in a uprobe pre-handler. */
+/* Quirks: NaN -> +qNaN 0x7FFFFFFF, exact cancellation -> +0, RNE, implicit-1 at bit 30. */
 u32 fadd(u32 a, u32 b) {
 	u32 mant_a, mant_b;
 	u32 sig_a, sig_b;
@@ -234,7 +234,7 @@ u32 fadd(u32 a, u32 b) {
 				u32 base_exp;
 
 				if (leading_pos >= 24) {
-					/* Sticky = OR of mantissa bits below the round bit; unrolled-by-2 matches original codegen. */
+					/* Sticky = OR of mantissa bits below the round bit; unrolled-by-2 for original codegen. */
 					int bound = leading_pos - 23;
 
 					if (bound > 1) {
@@ -351,8 +351,7 @@ int handler_pre(struct uprobe_consumer *self, struct pt_regs *regs) {
 	if (sensor_type != 4)
 		return 0;
 
-	/* The AIDL EventPayload is a fixed tagged union. Do not interpret another
-	 * active member as Vec3 even when a malformed Event claims gyro type. */
+	/* AIDL EventPayload is a tagged union; refuse to reinterpret another active member as Vec3. */
 	if (layout->has_tag) {
 		if (copy_from_user(&payload_tag,
 				   (void __user *)(user_ptr + layout->tag_off),
@@ -387,10 +386,7 @@ static int handler_pre_thunk(struct uprobe_consumer *self, struct pt_regs *regs)
 	return handler_pre(self, regs);
 }
 
-/* Second invocation on the same (inode, offset) blocks indefinitely inside
- * uprobe_register on Android 6.6 kernels — the global consumer is already on
- * the per-uprobe list and the re-add path waits on a lock the first caller
- * still holds. Gate on first-success to keep userspace re-bind safe. */
+/* Second bind on the same (inode, offset) deadlocks uprobe_register on 6.6; gate on first-success. */
 static bool uprobe_armed;
 static unsigned long armed_probe_offset;
 static int armed_layout_profile = -1;
@@ -443,9 +439,7 @@ int sensor_hook_init(unsigned long probe_offset, int layout_profile) {
 	if (ret != 0)
 		LOGE("uprobe_register failed: %d\n", ret);
 	else {
-		/* Publish the layout only after the registration succeeds. A handler
-		 * racing in the tiny interval before this store safely sees -1 and
-		 * leaves that event untouched. */
+		/* Publish layout after register succeeds; a racing handler sees -1 and skips. */
 		WRITE_ONCE(active_layout_profile, layout_profile);
 		armed_probe_offset = probe_offset;
 		armed_layout_profile = layout_profile;

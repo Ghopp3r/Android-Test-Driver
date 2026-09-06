@@ -20,28 +20,27 @@
 #define __nocfi
 #endif
 
-typedef int  (*drv_aarch64_insn_patch_text_fn_t)(void *addrs[], u32 insns[], int cnt);
+typedef int (*drv_aarch64_insn_patch_text_fn_t)(void *addrs[], u32 insns[], int cnt);
 typedef void (*drv_caches_clean_inval_pou_fn_t)(unsigned long start, unsigned long end);
 
 static drv_aarch64_insn_patch_text_fn_t drv_aarch64_insn_patch_text_ptr;
-static drv_caches_clean_inval_pou_fn_t  drv_caches_clean_inval_pou_ptr;
+static drv_caches_clean_inval_pou_fn_t drv_caches_clean_inval_pou_ptr;
 
 static __nocfi noinline int drv_call_aarch64_insn_patch_text(drv_aarch64_insn_patch_text_fn_t fn,
-                                                             void *addrs[], u32 insns[], int cnt) {
+		void *addrs[], u32 insns[], int cnt) {
 	return fn(addrs, insns, cnt);
 }
 static __nocfi noinline void drv_call_caches_clean_inval_pou(drv_caches_clean_inval_pou_fn_t fn,
-                                                             unsigned long s, unsigned long e) {
+		unsigned long s, unsigned long e) {
 	fn(s, e);
 }
 
-/* Lazy resolve from process context. caches_clean_inval_pou is 5.15+; on
- * older KMIs the lookup returns NULL and the per-call fallback fences are used. */
+/* Lazy-resolve from process context; caches_clean_inval_pou is 5.15+ (fallback fences on older KMIs). */
 static void hook_engine_resolve_symbols(void) {
 	if (drv_aarch64_insn_patch_text_ptr)
 		return;
 	drv_aarch64_insn_patch_text_ptr = (drv_aarch64_insn_patch_text_fn_t)kallsym_lookup("aarch64_insn_patch_text");
-	drv_caches_clean_inval_pou_ptr  = (drv_caches_clean_inval_pou_fn_t) kallsym_lookup("caches_clean_inval_pou");
+	drv_caches_clean_inval_pou_ptr = (drv_caches_clean_inval_pou_fn_t)kallsym_lookup("caches_clean_inval_pou");
 }
 
 /* Top-bits values that identify the encoding class once masked with inst_masks[]. */
@@ -476,14 +475,8 @@ hook_err_t hook_prepare(hook_t *hook) {
 	return HOOK_NO_ERR;
 }
 
-/* Apply the multi-word trampoline atomically.
- *
- * Fast path: aarch64_insn_patch_text — kernel's batched poke primitive that
- * internally stop_machine()'s and broadcasts IC IALLUIS on every CPU.
- *
- * Fallback (older / locked-down kernels): write_ro_memory + manual fence.
- * Closes the I-cache incoherence window but NOT the torn-fetch one — only
- * use when the symbol is genuinely unavailable. */
+/* Apply the trampoline atomically via aarch64_insn_patch_text (stop_machine + IC IALLUIS). */
+/* Fallback closes the I-cache window but NOT torn-fetch; only reached when symbol is unavailable. */
 static void hook_engine_patch_window(u64 dst, u32 *insns, int cnt) {
 	void *addrs[TRAMPOLINE_MAX_NUM];
 	int i, rc;

@@ -22,8 +22,8 @@
 #include "log.h"
 #include "stealth.h"
 
-/* Per-kernel offsets into struct kgsl_driver + kgsl_process_private (neither is exported).
- * 6.6 is device-tested; other rows extrapolated, guarded by holder_ptr_looks_valid(). */
+/* Per-kernel offsets into struct kgsl_driver + kgsl_process_private (neither exported). */
+/* 6.6 is device-tested; other rows extrapolated, guarded by holder_ptr_looks_valid(). */
 #if LINUX_VERSION_CODE < KERNEL_VERSION(5, 15, 0)
 #define KGSL_HOLDER_A_OFFSET 0x420
 #define KGSL_HAS_HOLDER_B 0
@@ -166,11 +166,7 @@ static int sysfs_create_group_pre(struct kprobe *p, struct pt_regs *regs) {
 	return 1;
 }
 
-/* D.1 (kobject_init_and_add hook) was removed: the target function initialises
- * the kobject before it can fail, and every caller assumes a subsequent
- * kobject_put is safe. Returning -ENOMEM before that init would hand back an
- * uninitialised kobject to the caller's cleanup path (bug #5). The three
- * remaining probes already cover the KGSL /sys/class/kgsl entry creation. */
+/* D.1 hook removed: returning -ENOMEM before kobject_init would leave callers put_ing an uninitialised kobject; the three remaining probes cover the KGSL /sys entry anyway. */
 
 static int arm_one(struct kprobe *kp, const char *name, kprobe_pre_handler_t handler) {
 	unsigned long addr;

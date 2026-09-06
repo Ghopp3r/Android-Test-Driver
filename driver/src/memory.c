@@ -58,7 +58,7 @@
 #include "memory.h"
 #include "uaccess_target.h"
 
-/* Pagewalk arithmetic uses kernel primitives (__pte_to_phys, PHYS_MASK, phys_to_virt) — correct for both PA_BITS_48 and PA_BITS_52 (LPA2) without per-version literals. */
+/* Pagewalk arithmetic uses kernel primitives; correct for PA_BITS_48 and PA_BITS_52 (LPA2). */
 /* Strip ARMv8 TBI / PAC byte from a user VA before uaccess. */
 #define DRV_TBI_PAC_STRIP_MASK 0xFF7FFFFFFFFFFFFFULL
 /* write_ro_memory PTE bit-flip: clear PTE_RDONLY(bit 7), set PTE_DBM(bit 51). */
@@ -69,17 +69,16 @@
 static u32 dcache_line_size_linear;
 static u32 dcache_line_size_vmap;
 
-/* Kernel's own self-modifying-text primitive (FIX_TEXT_POKE0 + broadcast TLBI). Kallsym-resolved. Bypasses the contig-block BBM hazard that broke the bespoke PTE-flip path on 6.6 GKI (kernel .text is mapped with PTE_CONT so per-VA TLBI cannot evict the 64 KiB amalgamated entry). Used by ftrace / jump_label / static_call / KernelPatch / KernelSU. */
+/* Kernel's self-modifying-text primitive (FIX_TEXT_POKE0 + broadcast TLBI). */
+/* Kallsym-resolved; sidesteps the PTE_CONT BBM hazard that broke the bespoke PTE-flip path on 6.6 GKI. */
 typedef int (*drv_insn_patch_text_nosync_fn_t)(void *addr, u32 insn);
 static drv_insn_patch_text_nosync_fn_t drv_insn_patch_text_nosync;
 
-/* get_cmdline signature is stable across 5.10..6.12 but not consistently GKI-exported; resolve through kallsyms so modpost does not add a version dependency. */
+/* get_cmdline signature stable across 5.10..6.12 but not always GKI-exported; kallsyms avoids a modpost dep. */
 typedef int (*drv_get_cmdline_fn_t)(struct task_struct *task, char *buffer, int buflen);
 static drv_get_cmdline_fn_t drv_get_cmdline;
 
-/* CFI-safe trampoline — mirrors kallsym_call_resolved in kallsym.c. The
-   kallsyms-resolved address was not built with caller-side CFI metadata
-   matching this typedef, so the indirect call must bypass kCFI. */
+/* CFI-safe trampoline: kallsyms-resolved target was not built with matching CFI metadata. */
 static __nocfi int drv_call_insn_patch_text_nosync(drv_insn_patch_text_nosync_fn_t fn, void *addr, u32 insn) {
 	return fn(addr, insn);
 }
@@ -119,7 +118,7 @@ int memory_init(void) {
 	return 0;
 }
 
-/* phys_to_virt() lives in <asm/memory.h>; honours vabits_actual so the linear-map VA is correct on every supported KMI without per-version PAGE_OFFSET constants. */
+/* phys_to_virt() honours vabits_actual — correct linear-map VA on every supported KMI. */
 
 static inline u32 drv_ctr_dcache_line_size(void) {
 	u64 ctr = read_sysreg(ctr_el0);
@@ -167,9 +166,8 @@ static inline u64 drv_lm_va_from_phys(u64 phys) {
 	return (u64)(uintptr_t)phys_to_virt(phys & PAGE_MASK);
 }
 
-/* Canonical pagewalk: caller holds mmap_read_lock(mm). Folded levels are
- * handled by the kernel helpers; PUD/PMD leaves use the configured granule's
- * block sizes. pte_offset_kernel avoids the 6.5 failable/RCU map API rework. */
+/* Canonical pagewalk: caller holds mmap_read_lock(mm). */
+/* Kernel helpers fold levels; PUD/PMD leaves use the granule's block sizes; pte_offset_kernel dodges 6.5's failable-map rework. */
 int vaddr_to_phys(struct mm_struct *mm, u64 va, u64 *out_phys) {
 	unsigned long addr = (unsigned long)va;
 	unsigned long pfn;
@@ -190,9 +188,7 @@ int vaddr_to_phys(struct mm_struct *mm, u64 va, u64 *out_phys) {
 	if (!mm->pgd)
 		return -EFAULT;
 
-	/* The caller holds mmap_read_lock(mm). Read each descriptor once so the
-	 * validation and PA extraction use the same hardware-updatable value.
-	 * Folded levels become passthroughs on the relevant arm64 configs. */
+	/* READ_ONCE each descriptor so validation and PA extraction see the same value. */
 	pgdp = pgd_offset(mm, addr);
 	pgd = READ_ONCE(*pgdp);
 	if (pgd_none(pgd) || pgd_bad(pgd))
@@ -208,9 +204,7 @@ int vaddr_to_phys(struct mm_struct *mm, u64 va, u64 *out_phys) {
 	if (pud_none(pud))
 		return -EFAULT;
 
-	/* A valid arm64 block descriptor is not a next-level table descriptor,
-	 * so pud_bad()/pmd_bad() report it as bad. Test leaves first and add the
-	 * base-page index inside the complete block mapping. */
+	/* Block descriptors trip pud_bad/pmd_bad; test leaves first. */
 	if (pud_leaf(pud)) {
 		if (!pud_present(pud))
 			return -EFAULT;
@@ -233,8 +227,7 @@ int vaddr_to_phys(struct mm_struct *mm, u64 va, u64 *out_phys) {
 	if (pmd_bad(pmd))
 		return -EFAULT;
 
-	/* arm64 has no highmem page-table pages. Keep pte_offset_kernel() here to
-	 * avoid the failable pte_offset_map() API transition in Linux 6.5. */
+	/* No highmem page-table pages on arm64; pte_offset_kernel dodges 6.5's failable-map rework. */
 	ptep = pte_offset_kernel(pmdp, addr);
 	if (!ptep)
 		return -EFAULT;
@@ -252,15 +245,7 @@ resolved:
 	return 0;
 }
 
-/* Reject obviously-bogus user pointers via the kernel's per-task access_ok().
- *
- * Replaces the hand-rolled `(DRV_TASK_SIZE_64 - size) >= ptr` guard that used a
- * baked-in 0x8000000000 (39-bit VA) constant.  When the caller's buffer sat in
- * the top of the 39-bit user VA — exactly where arm64 main-thread stacks live —
- * adding a multi-MiB length crossed the constant and the guard silently rejected
- * valid buffers, leaving DRV_CMD_READ_MEM_* returning size_back=0 with no error
- * propagated past comm.c.  access_ok() consults TASK_SIZE_MAX (vabits_actual)
- * and matches whatever VA layout the running kernel actually uses. */
+/* access_ok() honours TASK_SIZE_MAX (vabits_actual) — matches the running kernel's VA layout. */
 static inline bool drv_user_ptr_in_range(u64 ptr, u64 size) {
 	return access_ok((const void __user *)(uintptr_t)ptr, (size_t)size);
 }
@@ -287,24 +272,12 @@ int read_process_memory_linear(struct mm_struct *target_mm, u64 target_va, void 
 
 		lm_va = drv_lm_va_from_phys(phys);
 
-		/* drv_lm_va_from_phys returns the page-aligned linear-map VA;
-		 * the in-page offset must be re-added here. The previous code
-		 * silently copied from the start of every source page, hiding
-		 * the bug behind write-then-read tests (both sides skipped the
-		 * offset and matched) but breaking MULTI_READ which honoured it. */
+		/* drv_lm_va_from_phys is page-aligned; +off is the actual source byte. */
 		if (copy_to_user((void __user *)(uintptr_t)user_dst,
 		                 (const void *)(uintptr_t)lm_va + off, chunk) != 0)
 			LOGE("copy_to_user failed: %s\n", __func__);
 
-		/* No dcache maintenance here. Pure data reads through the linear-map
-		 * alias are CPU-coherent — copy_to_user's uaccess epilogue drains the
-		 * store buffer for the destination, and the linear-map and user view
-		 * of the source page are the same physical line on a coherent ARMv8
-		 * SoC. The DC CIVAC ladder is only required when the source has been
-		 * mutated as data and will be fetched as instructions (write_ro_memory
-		 * / hook installation) — which has its own cache-maintenance step in
-		 * hook_engine.c. Removing the per-page flush gives ~8× speedup on
-		 * bulk reads (per drv_bench: 1 MiB 9.5 ms → ~1.1 ms). */
+		/* No dcache maintenance: linear-map read is CPU-coherent on ARMv8; DC CIVAC only needed for D->I transitions (write_ro_memory owns that). */
 
 skip:
 		remain -= chunk;
@@ -390,8 +363,7 @@ int read_process_memory_vmap(struct mm_struct *target_mm, u64 target_va, void *l
 		if (!pages[0])
 			goto skip;
 
-		/* Let the running arm64 kernel provide the correct writable mapping
-		 * attributes (including its KPTI nG policy). */
+		/* PAGE_KERNEL — kernel supplies writable attrs incl. KPTI nG policy. */
 		mapped = vmap(pages, 1, VM_MAP, PAGE_KERNEL);
 		if (!mapped)
 			goto skip;
@@ -483,9 +455,8 @@ int kernel_rw(u64 kva, void *buf, size_t len, int do_write) {
 	return 0;
 }
 
-#define DRV_MULTI_READ_MAX_COUNT 4096u   /* hard ceiling so attacker-controlled
-                                           count cannot DoS the system via a
-                                           ~96 KiB+ kvmalloc staging spike. */
+/* Hard ceiling so attacker-controlled count cannot spike a ~96 KiB+ kvmalloc staging. */
+#define DRV_MULTI_READ_MAX_COUNT 4096u
 
 int multi_read_process_memory(struct mm_struct *target_mm, void __user *descs, unsigned int count) {
 	struct drv_multi_read_req *staging;
@@ -523,10 +494,7 @@ int multi_read_process_memory(struct mm_struct *target_mm, void __user *descs, u
 			if (vaddr_to_phys(target_mm, src_va, &phys) != 0)
 				goto next;
 
-			/* Linear-map alias (same primitive read_process_memory_linear uses).
-			 * The page-aligned lm_va must be offset back to the actual source
-			 * byte via `+ off`. The earlier vmap+pfn_valid path failed silently
-			 * on vendor kernels where anonymous user pages didn't pass pfn_valid. */
+			/* Linear-map alias; +off is the actual source byte inside the page. */
 			lm_va = drv_lm_va_from_phys(phys);
 
 			(void)copy_to_user((void __user *)(uintptr_t)user_dst,
@@ -544,13 +512,8 @@ next:
 }
 
 #if PAGE_SHIFT == 12
-/* Legacy bespoke RO patcher: walks drv.m_pgd_va, flips PTE_RDONLY/PTE_DBM
-   around a byte copy, restores. Verbatim 1:1 with the original .ko. UNSAFE
-   on PTE_CONT-mapped text (Android 15 / 6.6 GKI maps kernel .text with the
-   contiguous hint — a per-VA TLBI cannot evict the amalgamated 64 KiB TLB
-   entry). Kept as the fallback path when aarch64_insn_patch_text_nosync is
-   not resolvable via kallsyms. Reachable today only on stripped kernels or
-   for byte-granular non-CONT writes on legacy KMIs. */
+/* Legacy PTE-flip fallback for when aarch64_insn_patch_text_nosync is unresolvable. */
+/* UNSAFE on PTE_CONT-mapped .text (6.6 GKI) — per-VA TLBI cannot evict the 64 KiB entry. */
 static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
 	u64 result = dst_kva;
 	const u8 *end = (const u8 *)(uintptr_t)dst_kva + len;
@@ -569,9 +532,7 @@ static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
 		u64 i;
 
 		if (level_count < 3 || level_count > 4) {
-			/* The module remains usable on LPA2, but this legacy fallback
-			 * only understands the 3/4-level 4 KiB format. Abort before
-			 * dereferencing the captured root on any other depth. */
+			/* Legacy fallback only supports 3/4-level 4 KiB; module itself still runs on LPA2. */
 			LOGE("write_ro_memory_pte_flip: unexpected page level %u; aborting\n", level_count);
 			return result;
 		}
@@ -602,9 +563,7 @@ static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
 						break;
 					next_pa = e & (~(-1LL << mask_width) << shift);
 				} else if ((e & 3) == 3) {
-					/* Table descriptor — OA encoding is identical to a PTE
-					 * leaf, so reuse the kernel's own PA extractor. Correct
-					 * across PA_BITS_48/52 unlike a hand-rolled bit mask. */
+					/* Table descriptor: reuse __pte_to_phys (correct across PA_BITS_48/52). */
 					next_pa = (u64)__pte_to_phys(__pte(e));
 				} else {
 					leaf = NULL;
@@ -653,9 +612,7 @@ static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
 	return result;
 }
 #else
-/* The legacy walker hard-codes a 9-bit index per level, which is only valid
- * for a 4 KiB arm64 granule. Keep the normal vmap/linear-map paths available
- * on 16/64 KiB kernels, but never mutate a guessed kernel page-table entry. */
+/* Legacy walker assumes 9-bit index per level (4 KiB granule); stub out on 16/64 KiB. */
 static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
 	(void)src;
 	(void)len;
@@ -665,16 +622,8 @@ static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
 }
 #endif
 
-/* Patch kernel text. Fast path: aarch64_insn_patch_text_nosync (resolved
-   once at init via kallsym_lookup) — routes the write through FIX_TEXT_POKE0
-   (a non-CONT fixmap slot) + caches_clean_inval_pou + broadcast IS TLBI.
-   Architecturally safe on PTE_CONT-mapped kernel text.
-
-   Fallback: legacy bespoke PTE-flip when the kernel symbol is not in
-   kallsyms (downgraded KMI, stripped kernel) or when caller hands unaligned
-   data. In-tree callers (hook_install / hook_remove) always pass 4-byte
-   aligned dst (function entry), 4-byte aligned src (u32 tramp_insts[]), and
-   a 4-byte-multiple len, so the fast path is taken in production. */
+/* Patch kernel text via aarch64_insn_patch_text_nosync (FIX_TEXT_POKE0 + IS TLBI). */
+/* Fallback to legacy PTE-flip on stripped kernels or unaligned callers; in-tree callers hit the fast path. */
 u64 write_ro_memory(u64 dst_kva, const void *src, u64 len) {
 	drv_insn_patch_text_nosync_fn_t patch = READ_ONCE(drv_insn_patch_text_nosync);
 	const u32 *src_u32;
@@ -769,10 +718,7 @@ struct task_struct *process_find_task_by_comm(const char *comm) {
 	return NULL;
 }
 
-/* A pathological process storm must not turn one ioctl into an unbounded
- * allocation. Android devices normally have hundreds of process leaders;
- * 65,536 still leaves ample headroom while bounding the snapshot at 512 KiB
- * on arm64. */
+/* Cap the snapshot at 512 KiB (arm64) so a process storm cannot balloon one ioctl. */
 #define DRV_PROCESS_SNAPSHOT_MAX 65536u
 
 static int process_snapshot_tasks(struct task_struct ***out_tasks,
@@ -790,8 +736,7 @@ static int process_snapshot_tasks(struct task_struct ***out_tasks,
 	*out_tasks = NULL;
 	*out_count = 0;
 
-	/* First pass only sizes the allocation. No sleeping operation is allowed
-	 * while walking the RCU-protected global task list. */
+	/* Sizing pass; no sleeping under RCU. */
 	rcu_read_lock();
 	for_each_process(p) {
 		if (capacity == DRV_PROCESS_SNAPSHOT_MAX) {
@@ -811,9 +756,7 @@ static int process_snapshot_tasks(struct task_struct ***out_tasks,
 	if (!tasks)
 		return -ENOMEM;
 
-	/* A second short RCU pass pins each leader. get_cmdline() is deliberately
-	 * deferred until after rcu_read_unlock() because it may take mmap locks
-	 * and sleep through access_process_vm(). */
+	/* Short RCU pass pins each leader; get_cmdline() is deferred (may sleep). */
 	overflow = false;
 	rcu_read_lock();
 	for_each_process(p) {
@@ -967,7 +910,7 @@ u64 process_get_tls(struct task_struct *task) {
 	if (!task)
 		return 0;
 
-	/* AArch32 compat tasks store tp_value in thread.uw.tp_value at the same field name — the per-arch struct already accounts for the layout shift. */
+	/* thread.uw.tp_value is the same field name for AArch32 compat; per-arch struct handles the shift. */
 	return (u64)task->thread.uw.tp_value;
 }
 
@@ -993,18 +936,8 @@ int process_get_apga(struct task_struct *task, u64 *lo, u64 *hi) {
 #endif
 }
 
-/* DRV_CMD_READ_VMA_COOKIE walks the target's VMA tree, matches anon_vma_name
- * against the userspace-supplied needle, and returns the matching VMA's
- * start address as the canonical 64-bit cookie. The original .ko's raw
- * offsets (vma+344 for the name, vma+2008/+2016 for a cookie u64) walked
- * past the end of struct vm_area_struct into adjacent slab objects and
- * were UB on every kernel — replaced with the kernel's anon_vma_name() API
- * (CONFIG_ANON_VMA_NAME, available since 5.17) and vma->vm_start (stable on
- * every KMI).
- *
- * On kernels older than 5.17 OR where CONFIG_ANON_VMA_NAME is disabled
- * (default off on GKI Android 15 / 6.6), the feature is unavailable and
- * we return 0 (no match). */
+/* Match anon_vma_name against @needle; cookie is vma->vm_start (canonical 64-bit). */
+/* Requires CONFIG_ANON_VMA_NAME (>= 5.17); returns 0 otherwise. */
 u64 process_read_vma_cookie(struct task_struct *task, const char *needle) {
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 17, 0) && IS_ENABLED(CONFIG_ANON_VMA_NAME)
 	struct mm_struct *mm;
@@ -1050,4 +983,4 @@ u64 process_read_vma_cookie(struct task_struct *task, const char *needle) {
 #endif
 }
 
-/* TTBR0-swap uaccess helpers live in uaccess_target.c (copy_to_target_user/copy_from_target_user). Use them for cross-mm copies; for copies against `current`'s userspace, fall back to the kernel-provided copy_to_user / copy_from_user. */
+/* Cross-mm copies go through uaccess_target.c; against current->mm use the kernel's copy_*_user directly. */

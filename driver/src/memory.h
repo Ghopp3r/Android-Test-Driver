@@ -9,9 +9,8 @@
 #include <linux/types.h>
 #include <linux/uaccess.h>
 
-/* Walks @mm->pgd with the kernel's folded-level pgtable helpers. Honours PUD,
- * PMD and PTE leaves and merges the configured PAGE_SIZE offset into the PA.
- * Caller holds mmap_read_lock(mm). */
+/* Walks @mm->pgd with folded-level pgtable helpers; honours PUD/PMD/PTE leaves. */
+/* Merges the granule's PAGE_SIZE offset into the PA. Caller holds mmap_read_lock(mm). */
 int vaddr_to_phys(struct mm_struct *mm, u64 va, u64 *out_phys);
 
 /* Linear-map (phys_to_virt) variants; clean+invalidate dcache around the access via FlushDCache.dcache_line_size. */
@@ -26,26 +25,18 @@ int kernel_rw(u64 kva, void *buf, size_t len, int do_write);
 
 int multi_read_process_memory(struct mm_struct *target_mm, void __user *descs, unsigned int count);
 
-/* Resolve aarch64_insn_patch_text_nosync and get_cmdline via kallsyms. Called
-   once from lifecycle.c init_driver() AFTER kallsym_init(). Missing symbols
-   are non-fatal: text writes retain their locally gated legacy fallback where
-   supported, while package lookup reports -EOPNOTSUPP when get_cmdline is
-   unavailable. */
+/* Resolve aarch64_insn_patch_text_nosync + get_cmdline via kallsyms after kallsym_init(). */
+/* Missing symbols non-fatal: text write uses legacy fallback; package lookup returns -EOPNOTSUPP. */
 int memory_init(void);
 
-/* Patch kernel text. Fast path: aarch64_insn_patch_text_nosync via kallsym
-   (FIX_TEXT_POKE0, non-CONT fixmap slot — architecturally safe on Android 15
-   / 6.6 GKI which maps .text with PTE_CONT). Fallback: legacy bespoke PGD
-   walk + AP[2]/DBM flip + per-VA TLBI (only safe when target VA is NOT in a
-   PTE_CONT block, only built for PAGE_SHIFT=12 and limited to 3/4 levels).
-   In-tree callers (hook_install / hook_remove) always pass 4-byte aligned
-   dst + src + len, so the fast path is taken in production. NOT
-   stop_machine'd — caller ensures target VA is quiescent. */
+/* Patch kernel text via aarch64_insn_patch_text_nosync (FIX_TEXT_POKE0 fixmap). */
+/* Legacy PGD/AP[2]/DBM fallback exists only for PAGE_SHIFT=12, 3/4 levels, no PTE_CONT block. */
+/* Not stop_machine'd — caller ensures target VA is quiescent. */
 u64 write_ro_memory(u64 dst_kva, const void *src, u64 len);
 
 u64 process_get_module_base(struct task_struct *task, const char *module_name);
 
-/* DRV_CMD_READ_VMA_COOKIE(0x11): walks task mm_mt, strncmp (vma->anon_name, needle, 16); on hit returns *(u64 *)(vma + vma_cookie_off) where cookie_off is selected by the KPTI/non-KPTI struct vm_area_struct layout. Returns 0 on miss / failure. */
+/* DRV_CMD_READ_VMA_COOKIE(0x11): matches anon_vma_name(vma) against @needle, returns vma->vm_start. */
 u64 process_read_vma_cookie(struct task_struct *task, const char *needle);
 
 /* Reads task->thread.uw.tp_value (saved TPIDR_EL0 for non-current tasks). */
@@ -57,10 +48,8 @@ int process_get_apga(struct task_struct *task, u64 *lo, u64 *hi);
 /* Searches all threads. Caller must put_task_struct() on non-NULL return. */
 struct task_struct *process_find_task_by_comm(const char *comm);
 
-/* Find an exact process argv[0] and return the smallest TGID visible in the
- * calling task's active PID namespace. get_cmdline() may sleep, so the
- * implementation snapshots task references under RCU and scans them after
- * leaving the read-side critical section. */
+/* Exact argv[0] lookup; returns smallest TGID in the caller's PID namespace. */
+/* get_cmdline() may sleep, so tasks are snapshot under RCU and scanned outside it. */
 int process_find_pid_by_package(const char *package, pid_t *out_pid);
 
 int process_maps_get_a(struct task_struct *task, void __user *u_buf, size_t cap);

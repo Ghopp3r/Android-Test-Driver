@@ -13,10 +13,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ReportUiTest {
-    /* Every catalog check is emitted so the parser accepts the report as
-     * complete; the failing case flips one line to FAIL. Group count comes
-     * from TestCatalog.all so adding a group in the catalog doesn't require
-     * hand-editing the numeric expectations below (see groupsPass / groupsFail). */
+    // Emits every catalog check so the parser accepts the report as complete.
+    // The failing case flips exactly one line to FAIL.
+    // Group count comes from TestCatalog.all so adding a group doesn't require hand-editing counts below.
     private class ReportProcess(fail: Boolean = false, val finished: CountDownLatch = CountDownLatch(0)) : Process() {
         private val checks = TestCatalog.all.flatMap { it.checks }
         private val code = if (fail) 1 else 0
@@ -46,8 +45,7 @@ class ReportUiTest {
         assertEquals(expected, actual)
     }
 
-    /* Derived from the current catalog so a new S17/S18/… doesn't silently
-     * break the numeric expectations here — that was review finding R6. */
+    // Derived from the catalog so a new S17/S18/… doesn't silently break the numeric expectations (R6).
     private val groupCount = TestCatalog.all.size
     private val allPassSummary = "$groupCount PASS / 0 FAIL / 0 SKIP"
     private val firstFailSummary = "${groupCount - 1} PASS / 1 FAIL / 0 SKIP"

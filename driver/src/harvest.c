@@ -19,16 +19,11 @@
 #  define KCFG_TARGET_PACKAGE "cent.tmgp.sgame"
 #endif
 
-/* ARM64 ESR_ELx data-fault status code mask: bits 0..11 of the ISS field cover
- * {FSC, WnR, S1PTW, CM} for data aborts. The composite value 0x1F4 unpacks to
- * CM | S1PTW | WnR | permission-style FSC subset — the harvest tag the
- * original .ko keys off. */
+/* ESR_ELx ISS bits 0..11 (FSC/WnR/S1PTW/CM); 0x1F4 = the harvest tag the original .ko keys off. */
 #define ESR_DFSC_MASK 0xFFFu
 #define ESR_DFSC_HARVEST_VAL 0x1F4u
 
-/* drv.wz_hero_addr_map / drv.wz_hero_objects are the single source of truth
- * shared with comm.c's DRV_CMD_GAME_ASSET_READ_A / _B / TEAR_DOWN consumers
- * — a file-static duplicate would silently desync from userspace. */
+/* Alias drv.wz_hero_addr_map so comm.c's DRV_CMD_GAME_ASSET_* consumers see the same storage. */
 static inline struct wz_hero_slot *wz_slots(void) {
 	return (struct wz_hero_slot *)drv.wz_hero_addr_map;
 }
@@ -73,28 +68,12 @@ static bool harvest_match_current_pkg(void) {
 	if (!task || !task->mm)
 		return false;
 
-	/* task->comm replaces the vendor mm+0x830 deref from the IDA original —
-	 * that offset is past the end of struct mm_struct on stock GKI and
-	 * recursed via faults inside do_page_fault on every non-target process. */
+	/* task->comm replaces the vendor mm+0x830 deref (past GKI's mm_struct end). */
 	return strncmp(task->comm, KCFG_TARGET_PACKAGE, TASK_COMM_LEN) == 0;
 }
 
-/* do_mem_abort pre_handler.
- *
- * do_page_fault itself is annotated `static __kprobes` and therefore lies in
- * the .kprobes.text section that arch_within_kprobe_blacklist() rejects via
- * linker-baked bounds (kallsym_disable_kprobe_blacklist cannot reach that
- * check).  do_mem_abort is the only caller of do_page_fault on arm64 and
- * shares the exact same signature — kprobing it is equivalent for our
- * purposes and is allowed by the kprobes core.
- *
- * `regs` is the kprobe trap frame captured at the BRK in do_mem_abort's
- * prologue; X0..X2 still hold the probed function's three incoming args:
- *   regs->regs[0] = far  (unsigned long)
- *   regs->regs[1] = esr  (unsigned long)
- *   regs->regs[2] = inner pt_regs *  — the FAULTING TASK's user-space reg
- *                                       file. Harvest's X2/X8/X9 come from
- *                                       inner->regs[*]. */
+/* do_mem_abort pre_handler; do_page_fault itself is __kprobes-blacklisted at link time. */
+/* Args at kprobe entry: X0 = far, X1 = esr, X2 = inner pt_regs* (faulting task's regs). */
 int do_mem_abort_pre(struct kprobe *p, struct pt_regs *regs) {
 	struct pt_regs *inner;
 	unsigned long esr;
@@ -125,10 +104,7 @@ int do_mem_abort_pre(struct kprobe *p, struct pt_regs *regs) {
 }
 NOKPROBE_SYMBOL(do_mem_abort_pre);
 
-/* Backup harvest entry: arm64_force_sig_fault fires on the SIGSEGV escalation
- * path. The user reg-file is not available from this kprobe's arg list, so we
- * only confirm the target gate; do_page_fault_pre captures the actual register
- * state upstream. */
+/* Backup entry: only confirms the target gate; do_mem_abort_pre captures the reg state. */
 int arm64_force_sig_fault_pre(struct kprobe *p, struct pt_regs *regs) {
 	(void)p;
 	(void)regs;
@@ -155,12 +131,7 @@ static int install_mem_abort_kprobe(void) {
 	if (do_mem_abort_kp_registered)
 		return 0;
 
-	/* do_mem_abort is annotated NOKPROBE_SYMBOL on every supported KMI
-	 * (its entry is added to kprobe_blacklist at boot).  Zero the list so
-	 * within_kprobe_blacklist() returns false and register_kprobe doesn't
-	 * silently bail with -EINVAL.  This is the same call the original .ko
-	 * makes; on a kernel where do_mem_abort is NOT blacklisted it's a
-	 * harmless no-op on the rest of the list. */
+	/* do_mem_abort is on kprobe_blacklist; zero the list so register_kprobe does not bail -EINVAL. */
 	(void)kallsym_disable_kprobe_blacklist();
 
 	ret = register_kprobe(&do_mem_abort_kp);

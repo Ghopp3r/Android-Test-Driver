@@ -79,12 +79,8 @@ enum drv_cmd {
 	DRV_CMD_HWBP_INSTALL = 0x40,
 	DRV_CMD_HWBP_REMOVE = 0x41,
 	DRV_CMD_HWBP_SET_OVERRIDE = 0x42,
-	/* 0x43 previously held DRV_CMD_HWBP_GET_HITS with a 280-byte hit record.
-	 * The record now carries FPSIMD state and is 800 bytes; the new value
-	 * lives in the extended range (0x63). Kernels built against this UAPI
-	 * reject the old number with -EPROTO so a stale client sees an
-	 * authoritative ABI break instead of misreading the payload (review R4). */
-	DRV_CMD_HWBP_GET_HITS_LEGACY = 0x43,
+	/* 0x43 was 280-byte GET_HITS; record now 800 bytes with FPSIMD, moved to 0x63. */
+	DRV_CMD_HWBP_GET_HITS_LEGACY = 0x43, /* rejects with -EPROTO; new number is 0x63 (gen 2) */
 	DRV_CMD_HWBP_CLEAR_ALL = 0x44,
 	DRV_CMD_HWBP_GET_CAPS = 0x45,
 	DRV_CMD_HWBP_SET_SAMPLE = 0x46,
@@ -98,13 +94,11 @@ enum drv_cmd {
 	DRV_CMD_PTE_HOOK_RANGE_FIRST = DRV_CMD_PTE_HOOK_INSTALL,
 	DRV_CMD_PTE_HOOK_RANGE_LAST = DRV_CMD_PTE_HOOK_CLEAR_ALL,
 
-	/* Extended HWBP commands placed after PTE + hide ranges to keep the
-	 * primary HWBP range contiguous. GET_HITS lives here so its new 800-byte
-	 * record has a fresh command number instead of colliding with PTE (N1). */
+	/* Extended HWBP commands after PTE + hide ranges to keep the primary HWBP range contiguous. */
 	DRV_CMD_HWBP_SET_BYPASS_PID = 0x60,
 	DRV_CMD_HWBP_SET_NOTIFY = 0x61,
 	DRV_CMD_HWBP_TRANSLATE_BAIT = 0x62,
-	DRV_CMD_HWBP_GET_HITS = 0x63,          /* 800-byte hit records, ABI gen 2 */
+	DRV_CMD_HWBP_GET_HITS = 0x63, /* 800-byte hit records, ABI gen 2 */
 	DRV_CMD_HWBP_EXT_RANGE_FIRST = DRV_CMD_HWBP_SET_BYPASS_PID,
 	DRV_CMD_HWBP_EXT_RANGE_LAST = DRV_CMD_HWBP_GET_HITS,
 
@@ -177,16 +171,11 @@ struct drv_input_event {
 #define DRV_HWBP_MAX_OVERRIDES 10u
 #define DRV_HWBP_HIT_RING_SLOTS 32u
 
-/* Per-tracker install flags. `flags` field is reused from the historical `_pad`
- * slot of drv_hwbp_install_req — zero means legacy behaviour. */
-/* DEPRECATED — used to make install redirect req.addr via translate_bait, which
- * stranded the client under a key it couldn't reach. Callers now invoke
- * DRV_CMD_HWBP_TRANSLATE_BAIT explicitly and install with the resolved
- * address. The bit is still accepted for source compatibility but has no
- * effect and is no longer reported in caps.flags_supported (review R5). */
+/* Per-tracker install flags; `flags` reuses the historical `_pad` slot (zero = legacy). */
+/* DEPRECATED: no effect, retained for source compatibility, absent from caps.flags_supported. */
 #define DRV_HWBP_FLAG_BAIT_GUARD (1u << 0)
-#define DRV_HWBP_FLAG_NOTIFY (1u << 1)       /* deliver signal_no (default 43) to notify_pid on hit */
-#define DRV_HWBP_FLAG_CAPTURE_FP (1u << 2)   /* capture FPSIMD state (Q0..Q31) in hit ring */
+#define DRV_HWBP_FLAG_NOTIFY (1u << 1) /* deliver signal_no (default 43) to notify_pid on hit */
+#define DRV_HWBP_FLAG_CAPTURE_FP (1u << 2) /* capture FPSIMD state (Q0..Q31) in hit ring */
 #define DRV_HWBP_FLAG_TIMING_BYPASS (1u << 3) /* skip ring push & signal to eliminate observable latency */
 
 /* Condition operator for DRV_CMD_HWBP_SET_CONDITION. */
@@ -237,47 +226,44 @@ struct drv_hwbp_hit {
 	__u32 fpcr;
 };
 
-/* ABI generation bumped when wire format or command numbers change in a way
- * sizeof-checks alone can't catch. Kept in the upper 8 bits of
- * flags_supported so the caps struct itself stays 32 bytes — enlarging the
- * struct under the same ioctl number would overflow an old client's stack
- * buffer. gen 2 = 800-byte hit records + GET_HITS at 0x63. */
-#define DRV_HWBP_ABI_GENERATION      2u
-#define DRV_HWBP_ABI_GEN_SHIFT       24u
-#define DRV_HWBP_ABI_GEN_MASK        0xFFu
-#define DRV_HWBP_CAPS_FLAGS_MASK     0x00FFFFFFu
+/* Bumped when wire format or command numbers change beyond what sizeof checks catch. */
+/* Packed into high 8 bits of flags_supported so caps stays 32 bytes — growing it would overflow an old client's stack buffer. */
+/* gen 2 = 800-byte hit records + GET_HITS at 0x63. */
+#define DRV_HWBP_ABI_GENERATION 2u
+#define DRV_HWBP_ABI_GEN_SHIFT 24u
+#define DRV_HWBP_ABI_GEN_MASK 0xFFu
+#define DRV_HWBP_CAPS_FLAGS_MASK 0x00FFFFFFu
 
-#define DRV_HWBP_CAPS_GEN(v)   \
+#define DRV_HWBP_CAPS_GEN(v) \
 	(((v) >> DRV_HWBP_ABI_GEN_SHIFT) & DRV_HWBP_ABI_GEN_MASK)
 #define DRV_HWBP_CAPS_FLAGS(v) \
 	((v) & DRV_HWBP_CAPS_FLAGS_MASK)
 
 struct drv_hwbp_caps {
-	__u32 num_brps;         /* execute slots reported by ID_AA64DFR0_EL1.BRPs */
-	__u32 num_wrps;         /* watchpoint slots reported by ID_AA64DFR0_EL1.WRPs */
-	__u32 ring_slots;       /* DRV_HWBP_HIT_RING_SLOTS */
-	__u32 max_overrides;    /* DRV_HWBP_MAX_OVERRIDES */
-	__u32 hit_bytes;        /* sizeof(struct drv_hwbp_hit) */
-	__u32 install_req_bytes;/* sizeof(struct drv_hwbp_install_req) */
-	/* Low 24 bits: DRV_HWBP_FLAG_* mask this build understands.
-	 * High  8 bits: DRV_HWBP_ABI_GENERATION.  Use the helpers above. */
+	__u32 num_brps; /* execute slots reported by ID_AA64DFR0_EL1.BRPs */
+	__u32 num_wrps; /* watchpoint slots reported by ID_AA64DFR0_EL1.WRPs */
+	__u32 ring_slots; /* DRV_HWBP_HIT_RING_SLOTS */
+	__u32 max_overrides; /* DRV_HWBP_MAX_OVERRIDES */
+	__u32 hit_bytes; /* sizeof(struct drv_hwbp_hit) */
+	__u32 install_req_bytes; /* sizeof(struct drv_hwbp_install_req) */
+	/* Low 24 bits: DRV_HWBP_FLAG_* this build understands; high 8 bits: DRV_HWBP_ABI_GENERATION. */
 	__u32 flags_supported;
-	__u32 fp_ready;         /* 1 if FPSIMD helpers were resolved at init */
+	__u32 fp_ready; /* 1 if FPSIMD helpers were resolved at init */
 };
 
 struct drv_hwbp_sample_req {
 	__s32 pid;
 	__u32 _pad;
 	__u64 addr;
-	__u32 every;   /* 0 = disable, N = fire only when hit_count % N == 0 */
+	__u32 every; /* 0 = disable, N = fire only when hit_count % N == 0 */
 	__u32 _pad2;
 };
 
 struct drv_hwbp_condition_req {
 	__s32 pid;
-	__u32 cond_op;   /* DRV_HWBP_COND_* */
+	__u32 cond_op; /* DRV_HWBP_COND_* */
 	__u64 addr;
-	__u32 cond_reg;  /* 0..30 (X-reg index) */
+	__u32 cond_reg; /* 0..30 (X-reg index) */
 	__u32 _pad;
 	__u64 cond_value;
 };
@@ -292,10 +278,9 @@ struct drv_hwbp_bypass_req {
 
 struct drv_hwbp_notify_req {
 	__s32 pid;
-	__s32 notify_pid;   /* recipient; 0 = disable notifications for this tracker */
+	__s32 notify_pid; /* recipient; 0 = disable notifications for this tracker */
 	__u64 addr;
-	/* signal_no: 0 → kernel default (43, past Bionic's 32..34 + 40/41 reserved
-	 * range). Explicit choices should stay ≥ 42 (SIGRTMIN+8..SIGRTMAX-4). */
+	/* signal_no: 0 -> kernel default 43 (past Bionic's 32..34, 40/41 reserved); explicit choices stay >= 42. */
 	__u32 signal_no;
 	__u32 _pad;
 };
@@ -303,8 +288,8 @@ struct drv_hwbp_notify_req {
 struct drv_hwbp_bait_req {
 	__s32 pid;
 	__u32 _pad;
-	__u64 addr;         /* user-supplied "bait" address */
-	__u64 real_addr;    /* [out] translated address (equal to input if no translation) */
+	__u64 addr; /* user-supplied "bait" address */
+	__u64 real_addr; /* [out] translated address (equal to input if no translation) */
 };
 
 /* AArch64 user-code return-stub ABI. TRAMPOLINE is reserved for v2. */

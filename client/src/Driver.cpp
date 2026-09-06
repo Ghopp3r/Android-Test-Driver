@@ -17,11 +17,10 @@ Driver::~Driver() {
     close();
 }
 
-// open() completes the reboot handshake, then negotiates HWBP:
-//   - caps EOPNOTSUPP/ENOTTY   → fd stays open, hwbpAvailable() == false (R3).
-//   - caps abi_generation mismatch OR sizeof mismatch → open() fails, errno = EPROTO
-//     (N2: sizeof alone can't tell 0x43/0x48 command generations apart).
-//   - other caps error         → open() fails with the raw errno.
+// open() handshakes, then negotiates HWBP caps.
+// EOPNOTSUPP/ENOTTY: fd stays open, hwbpAvailable() == false (R3).
+// abi_generation or sizeof mismatch: open() fails with EPROTO (N2: sizeof alone can't tell 0x43/0x48 apart).
+// Other caps error: open() fails with the raw errno.
 bool Driver::open() {
     if (m_fd >= 0) return true;
     int newFd = -1;
@@ -52,7 +51,11 @@ bool Driver::open() {
 }
 
 void Driver::close() {
-    if (m_fd >= 0) { ::close(m_fd); m_fd = -1; }
+    if (m_fd < 0) return;
+    ::close(m_fd);
+    m_fd = -1;
+    // Clear the cached probe so a later hwbpAvailable() before re-open reports honestly.
+    m_hwbpAvailable = false;
 }
 
 int Driver::doIoctl(unsigned int cmd, drv_ioctl_req* req) {
@@ -437,7 +440,7 @@ bool Driver::PteHook::clearAll() {
     return m_d.doIoctlRaw(DRV_CMD_PTE_HOOK_CLEAR_ALL, nullptr) >= 0;
 }
 
-// HidePid subsystem — up to 8 PIDs concealed from /proc readdir (and from proactive KGSL hooks when the driver was built with HIDE_KGSL_STRENGTH>=2).
+// HidePid — up to 8 PIDs hidden from /proc readdir (plus proactive KGSL hooks when built with HIDE_KGSL_STRENGTH>=2).
 bool Driver::HidePid::add(pid_t pid) {
     drv_ioctl_req req{};
     req.pid = static_cast<uint64_t>(pid);

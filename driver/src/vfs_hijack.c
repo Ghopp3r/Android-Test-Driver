@@ -40,7 +40,7 @@
 #define ABSBIT_MT_POSITION_X_MASK (1UL << ABS_MT_POSITION_X)
 #define ABSBIT_MT_POSITION_Y_MASK (1UL << ABS_MT_POSITION_Y)
 
-/* struct evdev is private to drivers/input/evdev.c (no public header), so we cannot reach input_dev via a named field. The layout has been stable on the android15-6.6 GKI we target: file->private_data is the evdev_client, +0x30 is the evdev pointer, +0x20 inside evdev is the input_dev. Keep this as an offset; everything else in this file is field-access. */
+/* struct evdev has no public header; layout stable on android15-6.6: client+0x30 -> evdev, evdev+0x20 -> input_dev. */
 #define EVDEV_CLIENT_EVDEV_OFFSET 0x30u
 #define EVDEV_INPUT_DEV_OFFSET 0x20u
 
@@ -62,17 +62,17 @@ static ssize_t(*orig_read)(struct file *, char __user *, size_t, loff_t *);
 
 static struct work_struct stop_vfs_read_work;
 
-/* Tracks whether vfs_read_kp is currently armed so stop_vfs_read_hook can avoid a double unregister when the queued work has already torn it down. */
+/* Guards stop_vfs_read_hook from double-unregistering after the queued work already tore down. */
 static bool vfs_read_kp_armed;
 
-/* One-shot guard: install_fops_proxy flips this to 1 on first f_op swap so qualifying reads after that skip re-install. */
+/* Set on first f_op swap so subsequent qualifying reads skip re-install. */
 static int vfs_read_hook_rc_inserted;
 
 static struct input_dev *dev_cache;
 
 static DEFINE_MUTEX(slot_lock);
 
-/* 0x14-byte stride matches the original: byte+0 = persistent active flag (sticky, cleared only on TRACKING_ID == -1), +4 = tracking_id, +8 = x, +0xC = y, +0x10 = touched-this-syscall flag. */
+/* 0x14-byte stride matches original: +0 sticky active, +4 tracking_id, +8 x, +0xC y, +0x10 touched-this-syscall. */
 struct vfs_mt_slot {
 	u8 active;
 	u8 _pad1;
@@ -85,7 +85,7 @@ struct vfs_mt_slot {
 };
 static struct vfs_mt_slot slots[DRV_MT_NUM_SLOTS];
 
-/* Default values used when the real evdev stream omits ABS_MT_TOUCH_MAJOR / ABS_MT_PRESSURE; the original emits a fixed pressure of 1 per touched slot. */
+/* Default when the real evdev stream omits TOUCH_MAJOR/PRESSURE; original emits 1 per touched slot. */
 #define VFS_HIJACK_DEFAULT_PRESSURE 1
 
 /* MT-B only sends ABS_MT_SLOT on slot change, so it must be sticky. */
@@ -99,7 +99,7 @@ static u8 read_events[READ_EVENTS_BUF_BYTES];
 static u8 final_events[FINAL_EVENTS_BUF_BYTES];
 static u32 final_event_count;
 
-/* struct evdev is not in any public header; reach input_dev via the documented offsets. See EVDEV_*_OFFSET above. */
+/* Reach input_dev via EVDEV_*_OFFSET above (struct evdev has no public header). */
 static struct input_dev *get_evdev_dev(struct file *file) {
 	void *client;
 	void *evdev;
@@ -142,7 +142,7 @@ static void install_fops_proxy(struct file *file) {
 
 	real_fops = file->f_op;
 
-	/* Field-by-field copy via designated init so we never touch removed-in-6.5 (iterate/sendpage) or added-in-6.12 (fop_flags) slots. */
+	/* Designated init dodges removed-in-6.5 (iterate/sendpage) and added-in-6.12 (fop_flags) slots. */
 	fops_proxy = (struct file_operations) {
 		.owner = real_fops->owner,
 		.llseek = real_fops->llseek,
@@ -230,13 +230,13 @@ static void parse_real_event(const struct input_event *ev) {
 	if (slot < 0 || slot >= DRV_MT_NUM_SLOTS)
 		return;
 
-	/* Original sets touched-this-syscall flag (+0x10) on any ABS_MT_* event arrival for the slot. */
+	/* Original sets touched-this-syscall on any ABS_MT_* arrival. */
 	slots[slot].touched_this_frame = 1;
 
 	switch (ev->code) {
 		case ABS_MT_TRACKING_ID:
 			slots[slot].tracking_id = ev->value;
-			/* Persistent active flag: sticky once set, cleared only on TRACKING_ID == -1 (finger up). */
+			/* Sticky active flag; only TRACKING_ID == -1 clears it (finger up). */
 			if (ev->value == -1)
 				slots[slot].active = 0;
 			else
@@ -244,7 +244,7 @@ static void parse_real_event(const struct input_event *ev) {
 			break;
 		case ABS_MT_POSITION_X:
 			slots[slot].x = ev->value;
-			/* MT-B reuse of an already-down slot can deliver POSITION without a fresh TRACKING_ID; original still marks active. */
+			/* MT-B slot reuse may deliver POSITION without a fresh TRACKING_ID; still mark active. */
 			slots[slot].active = 1;
 			break;
 		case ABS_MT_POSITION_Y:
@@ -276,7 +276,7 @@ static void synthesize_events(void) {
 	final_event_count = 0;
 	last_slot = -1;
 
-	/* Original at 0x13668 iterates 10 slots and CBZ-skips any whose slot+0x10 byte is zero (i.e. NOT touched by this syscall's input_event records); only touched slots emit. */
+	/* Emit only touched-this-syscall slots (matches original CBZ skip at 0x13668). */
 	for (i = 0; i < DRV_MT_NUM_SLOTS; i++) {
 		if (!slots[i].touched_this_frame)
 			continue;
@@ -294,13 +294,13 @@ static void synthesize_events(void) {
 		final_events_push(EV_ABS, ABS_MT_POSITION_X, slots[i].x);
 		final_events_push(EV_ABS, ABS_MT_POSITION_Y, slots[i].y);
 
-		/* Original emits ABS_MT_TOUCH_MAJOR(0x30) and ABS_MT_PRESSURE(0x3A) per touched slot using a fixed pressure value (1 when finger present). */
+		/* Fixed pressure 1 per touched slot (matches original TOUCH_MAJOR + PRESSURE emit). */
 		pressure = slots[i].active ? VFS_HIJACK_DEFAULT_PRESSURE : 0;
 		final_events_push(EV_ABS, ABS_MT_TOUCH_MAJOR, pressure);
 		final_events_push(EV_ABS, ABS_MT_PRESSURE, pressure);
 	}
 
-	/* Clear touched-this-frame after emission; persistent active flag survives until TRACKING_ID == -1. */
+	/* Clear touched-this-frame; sticky active persists until TRACKING_ID == -1. */
 	for (i = 0; i < DRV_MT_NUM_SLOTS; i++)
 		slots[i].touched_this_frame = 0;
 
@@ -337,13 +337,13 @@ int sys_read_handler_pre(struct kprobe *p, struct pt_regs *regs) {
 
 	(void)p;
 
-	/* __arm64_sys_read is a pt_regs syscall wrapper: its sole argument is (const struct pt_regs *regs). At kprobe entry, regs->regs[0] (the kprobe's x0) holds that POINTER to the syscall's pt_regs, not the fd itself. The actual fd is in syscall_regs->regs[0]. IDA confirms: fget(**a2) — a double dereference. A single deref would call fget() on the low 32 bits of a kernel pointer and the hook would never trigger. */
+	/* __arm64_sys_read wrapper: x0 is (const struct pt_regs *), so fd is a double-deref. */
 	syscall_regs = (struct pt_regs *)regs->regs[0];
 	if (!syscall_regs)
 		return 0;
 	fd = (unsigned int)syscall_regs->regs[0];
 
-	/* fget() returns NULL on a bad fd; it never returns ERR_PTR, so no IS_ERR check is needed (and an IS_ERR-then-fput path would fput a poison pointer). */
+	/* fget() returns NULL on bad fd (never ERR_PTR); IS_ERR-then-fput would fput a poison pointer. */
 	file = fget(fd);
 	if (!file)
 		return 0;
@@ -355,7 +355,7 @@ int sys_read_handler_pre(struct kprobe *p, struct pt_regs *regs) {
 	dentry = file->f_path.dentry;
 	if (!dentry)
 		goto out_put;
-	/* struct qstr.name is const unsigned char *; cast to silence -Wpointer-sign and make the conversion intentional for strstr()/strncmp() consumers below. */
+	/* qstr.name is const unsigned char *; cast silences -Wpointer-sign for strstr/strncmp. */
 	short_name = (const char *)dentry->d_name.name;
 	if (!short_name || !strstr(short_name, "event"))
 		goto out_put;
@@ -404,14 +404,14 @@ ssize_t read_proxy(struct file *file, char __user *buf, size_t count, loff_t *pp
 
 	vfs_hijack_init_fingers();
 
-	/* Indirect call via the typed pointer so the compiler emits the CFI typeid check (matches the 0xE866E2F4 KCFI hash + BLR X8 the original binary does by hand). */
+	/* Typed pointer so the compiler emits the CFI typeid check (matches original's 0xE866E2F4 + BLR X8). */
 	if (!orig_read) {
 		mutex_unlock(&slot_lock);
 		return -EIO;
 	}
 	real = orig_read(file, buf, count, ppos);
 
-	/* Original at 0x1343c falls through to synthesis even on short/error/misaligned returns (B.LT skips the parse pass with X20=0 then jumps to 0x13668). The synthesized stream always contains at least a terminating SYN_REPORT, so userspace never sees EAGAIN/EINTR/EIO surfacing through this path. */
+	/* Original falls through to synth on short/error/misaligned; SYN_REPORT terminator hides EAGAIN/EINTR/EIO. */
 	parse_bytes = 0;
 	if (real >= (ssize_t)INPUT_EVENT_SIZE && ((size_t)real % INPUT_EVENT_SIZE) == 0 && (size_t)real <= READ_EVENTS_BUF_BYTES) {
 		parse_bytes = (size_t)real;
@@ -438,7 +438,7 @@ ssize_t read_proxy(struct file *file, char __user *buf, size_t count, loff_t *pp
 	}
 
 	mutex_unlock(&slot_lock);
-	/* Original always returns the synthesized byte count (>= 24 bytes from the unconditional terminator), never the raw evdev count. */
+	/* Return synthesized byte count (>= 24 bytes from terminator), never raw evdev count. */
 	return (ssize_t)out_bytes;
 }
 
