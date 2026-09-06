@@ -441,9 +441,7 @@ std::vector<pid_t> Driver::HidePid::list() {
     return out;
 }
 
-// HideName subsystem — up to 16 exact-basename entries concealed from every
-// filldir64-based readdir (procfs, ext4, f2fs, tmpfs, overlayfs). Same kprobe
-// as HidePid; lazily armed on first add.
+// HideName — 16 basename slots; covers every filldir64-based readdir (proc/ext4/f2fs/tmpfs/overlayfs).
 bool Driver::HideName::add(const std::string& name) {
     if (name.empty() || name.size() >= 64) { errno = EINVAL; return false; }
     drv_ioctl_req req{};

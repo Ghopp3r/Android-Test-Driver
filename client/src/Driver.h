@@ -119,8 +119,7 @@ public:
         Driver& m_d;
     };
 
-    /* Directory-entry name hider — shares the filldir64 kprobe with HidePid.
-     * Matches exactly on basename (no globbing). Up to 16 slots, ≤63 chars. */
+    /* Directory-entry basename hider (16 slots, ≤63 chars). Shares kprobe with HidePid. */
     class HideName {
     public:
         HideName(Driver& d) : m_d(d) {}
@@ -157,8 +156,7 @@ public:
     HidePid hidePid;
     HideName hideName;
 
-    /* Escape hatch for tests + one-off ioctls that don't have a typed wrapper
-     * yet. Returns true iff the ioctl returned >= 0. */
+    /* Escape hatch for tests + untyped ioctls; true iff ioctl returned >= 0. */
     bool rawIoctl(unsigned int cmd, void* arg) { return doIoctlRaw(cmd, arg) >= 0; }
 
 private:

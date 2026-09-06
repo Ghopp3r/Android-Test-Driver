@@ -171,9 +171,7 @@ void test_install_matrix() {
 // ---------------------------------------------------------------------------
 // S5 — bypass_pid one-shot
 // ---------------------------------------------------------------------------
-/* arm64 kernel perf may re-arm the BP after single-step and multiple samples
- * can land per userspace call — compare against a baseline sample instead of
- * expecting a fixed hit count. */
+/* arm64 perf may re-arm the BP after single-step, so hits per call can exceed 1. */
 static size_t hits_for_probe_fn(int reps) {
 	for (int i = 0; i < reps; ++i) probe_fn();
 	return driver.hwbp.getHits(reinterpret_cast<uint64_t>(&probe_fn)).size();
@@ -224,8 +222,7 @@ void test_sample_gate() {
 	size_t base = hits_for_probe_fn(6);
 	driver.hwbp.remove(addr);
 
-	// With sample gate: expect roughly base/every hits (kernel may re-fire per
-	// user call — the gate applies to counter, so ratio is what we verify).
+	// With sample gate: expect roughly base/every hits — verify the ratio, not the raw count.
 	driver.hwbp.clearAll();
 	if (!driver.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4)) {
 		FAIL("S6_sample", "reinstall failed"); return;
@@ -236,8 +233,7 @@ void test_sample_gate() {
 	size_t gated = hits_for_probe_fn(6);
 	driver.hwbp.remove(addr);
 
-	// Gate must divide the count by roughly `every` — accept anywhere from
-	// base/every-1 to base/every+1 to tolerate kernel jitter.
+	// Accept a small jitter window around base/every.
 	size_t expected_hi = base / 3 + 1;
 	if (base > 0 && gated <= expected_hi && gated > 0)
 		PASS("S6_sample", "baseline=%zu every=3 gated=%zu (expected ≲%zu)", base, gated, expected_hi);
@@ -266,8 +262,7 @@ void test_conditional() {
 	size_t base = driver.hwbp.getHits(addr).size();
 	driver.hwbp.remove(addr);
 
-	// With condition X0 == 42, only the 42 call may push. Kernel re-fires may
-	// duplicate the pass, but the two mismatched calls must produce zero.
+	// With X0 == 42: only the matching call may push (with possible re-fire duplicates).
 	driver.hwbp.clearAll();
 	if (!driver.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4)) {
 		FAIL("S7_conditional", "reinstall failed"); return;
@@ -296,17 +291,11 @@ void test_notify() {
 	driver.hwbp.clearAll();
 	std::printf("[BEGIN] S8_notify\n");
 
-	/* Pin the signal number explicitly. Bionic reserves 32..34 for libc
-	 * internals (posix-timer, pthread-cancel, pthread-cleanup); signal 40
-	 * is safely above that window and delivers si_int with the bp_id. */
+	/* Bionic reserves signals 32..34 for libc internals; 40 is safely past that window. */
 	const int SIG = 40;
 	g_sig_int.store(0, std::memory_order_release);
 
-	/* Async handler path — bionic's sigtimedwait on the main thread
-	 * doesn't reliably drain a signal that was queued to that same
-	 * thread's private pending. Installing a handler + polling a flag
-	 * avoids that libc quirk and doesn't rely on the pthread_sigmask
-	 * ↔ sigtimedwait invariants. */
+	/* Handler + poll — bionic's sigtimedwait on the main thread can miss its own private pending. */
 	struct sigaction sa{};
 	sa.sa_flags = SA_SIGINFO | SA_RESTART;
 	sa.sa_sigaction = sigrt_handler;
@@ -322,13 +311,12 @@ void test_notify() {
 		driver.hwbp.remove(addr); return;
 	}
 	probe_fn();
-	/* Poll for delivery — workqueue → send_sig_info → handler is
-	 * asynchronous; typical latency is a few ms. */
+	/* Poll for async delivery — 10 ms × 100 = 1 s cap. */
 	int seen = 0;
 	for (int i = 0; i < 100 && !seen; ++i) {
 		seen = g_sig_int.load(std::memory_order_acquire);
 		if (seen) break;
-		usleep(10000); /* 10ms × 100 = 1s cap */
+		usleep(10000);
 	}
 	driver.hwbp.remove(addr);
 	if (seen)
@@ -353,10 +341,7 @@ void test_fpsimd_capture() {
 	if (!driver.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4, DRV_HWBP_FLAG_CAPTURE_FP)) {
 		FAIL("S9_fp_capture", "install failed errno=%d", errno); return;
 	}
-	/* Prime Q0 with a distinctive pattern on the caller side, then call the
-	 * probe. Compiler holds Q0 live into the callee for the duration between
-	 * the fmov pair and probe_fn_fp() because we mark Q0 clobbered here — so
-	 * the BP-entry snapshot must contain that same pattern. */
+	/* Prime Q0 with a distinctive pattern — clobber list keeps it live into probe_fn_fp(). */
 	const uint64_t lo = 0xCAFEF00DDEADBEEFULL;
 	const uint64_t hi = 0x0123456789ABCDEFULL;
 	asm volatile("fmov d0, %0\n\tfmov v0.d[1], %1\n\t" : : "r"(lo), "r"(hi) : "v0");
@@ -531,12 +516,9 @@ void test_fd_scoped_cleanup() {
 } // anon
 
 int main() {
-	/* Line-buffered stdout: when we're spawned under adb-shell → pipe → head,
-	 * block-buffering swallows every report() line until exit. */
+	/* Line-buffered stdout so adb-shell → pipe → head sees each row as it's printed. */
 	std::setvbuf(stdout, nullptr, _IOLBF, 0);
-	/* Whole-suite watchdog. If any single test wedges (a stray HWBP re-fire
-	 * loop or unhandled RT signal) the alarm fires and the runner still exits,
-	 * so `adb shell` doesn't sit forever waiting on us. */
+	/* Whole-suite watchdog — 2 min hard cap so a stray wedge still lets adb return. */
 	alarm(120);
 	std::printf("== my-driver-test starting (pid=%d) ==\n", getpid());
 	if (!test_open()) {

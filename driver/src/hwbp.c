@@ -221,10 +221,7 @@ static void hwbp_ring_push(struct hwbp_tracker *tracker, const struct pt_regs *r
 	u32 i;
 	bool want_fp = (tracker->flags & DRV_HWBP_FLAG_CAPTURE_FP) && hwbp_fp_ready;
 
-	/* FPSIMD save runs in this task's context — the perf overflow handler is
-	 * called from the exception path with current == the target task. Do it
-	 * BEFORE acquiring the ring spinlock: the helper may sleep on 5.10 (it
-	 * flushes the SVE state), and we cannot hold a raw spinlock across that. */
+	/* FPSIMD save must run before the ring spinlock — the helper may sleep on 5.10 (SVE flush). */
 	struct user_fpsimd_state fp_snap;
 	if (want_fp) {
 		drv_call_fpsimd_preserve_current_state(drv_fpsimd_preserve_current_state_ptr);
@@ -259,8 +256,7 @@ static void hwbp_ring_push(struct hwbp_tracker *tracker, const struct pt_regs *r
 	spin_unlock_irqrestore(&tracker->ring_lock, flags);
 }
 
-/* Evaluate the optional condition guard: returns true if the handler should
- * proceed (condition matched OR no condition set). cond_reg indexes X0..X30. */
+/* Returns true when the handler should proceed (no condition, or condition matched). */
 static bool hwbp_condition_matches(const struct hwbp_tracker *tracker, const struct pt_regs *regs) {
 	u64 v;
 	if (!READ_ONCE(tracker->has_condition))
@@ -368,7 +364,6 @@ static void hwbp_maybe_notify(struct hwbp_tracker *tracker) {
 	nw->signal_no = signal_no ? signal_no : (SIGRTMIN + 1);
 	nw->bp_id = (int)tracker->tracker_id;
 	INIT_WORK(&nw->work, hwbp_notify_worker);
-	LOGI("hwbp: notify queue sig=%d bp_id=%d\n", nw->signal_no, nw->bp_id);
 	queue_work(system_wq, &nw->work);
 }
 
@@ -390,8 +385,7 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 		return;
 	}
 
-	/* pass_through toggle path: the second hit is our own re-arm — rearm to
-	 * origin and skip all gates. Applies only to execute breakpoints. */
+	/* pass_through toggle: second hit is our own re-arm, restore origin address and exit. */
 	if (tracker->pass_through && READ_ONCE(tracker->toggle) == HWBP_TOGGLE_NEXT) {
 		rc = hwbp_set_breakpoint_address(bp, tracker->addr);
 		if (rc) {
@@ -402,48 +396,26 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 		return;
 	}
 
-	/* Rate-limited handler diagnostics — larger limit so gated tests are observable. */
-	{
-		static atomic_t dbg_seen = ATOMIC_INIT(0);
-		int seen = atomic_read(&dbg_seen);
-		if (seen < 80) {
-			atomic_inc(&dbg_seen);
-			LOGI("hwbp: hit tracker=%px cur.pid=%d cur.tgid=%d bypass=%d sample_every=%u sample_ctr=%u flags=%x\n",
-			     tracker, current->pid, current->tgid,
-			     tracker->bypass_pid, tracker->sample_every,
-			     tracker->sample_counter, tracker->flags);
-		}
-	}
-
-	/* Bypass gate (one-shot): match on the target process, not just the
-	 * thread — userspace uses getpid() (TGID) but current->pid is TID.
-	 * On any skip we must advance PC (LR-return) to keep the aarch64 debug
-	 * exception path from re-firing on the same instruction — otherwise the
-	 * kernel would loop indefinitely on our BP. Matches the "no PC override
-	 * + not pass_through" behaviour at end of the handler. */
+	/* Gate skips must LR-return, otherwise the aarch64 debug path re-fires on the same instruction. */
 	{
 		s32 by = READ_ONCE(tracker->bypass_pid);
 		if (by && by == (s32)current->tgid) {
 			cmpxchg(&tracker->bypass_pid, by, 0);
-			LOGW_RL("hwbp: bypass consumed pid=%d\n", by);
 			if (!tracker->pass_through)
 				regs->pc = regs->regs[30];
 			return;
 		}
 	}
 
-	/* Sample gate: fire only when sample_counter % sample_every == 0. */
 	{
 		u32 every = READ_ONCE(tracker->sample_every);
 		if (every) {
 			u32 c = ++tracker->sample_counter;
 			if (c % every != 0) {
-				LOGW_RL("hwbp: sample SKIP c=%u every=%u\n", c, every);
 				if (!tracker->pass_through)
 					regs->pc = regs->regs[30];
 				return;
 			}
-			LOGW_RL("hwbp: sample PASS c=%u every=%u\n", c, every);
 		}
 	}
 
@@ -454,8 +426,7 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 		return;
 	}
 
-	/* TIMING_BYPASS: no ring push, no signal — reduces observable overhead to
-	 * the perf overflow path alone. Register overrides still applied. */
+	/* TIMING_BYPASS: skip ring push + notify; register overrides still applied. */
 	timing_bypass = !!(tracker->flags & DRV_HWBP_FLAG_TIMING_BYPASS);
 
 	count = hwbp_snapshot_overrides(tracker, overrides);
@@ -493,11 +464,9 @@ static void hwbp_notify_worker(struct work_struct *w) {
 	info.si_signo = nw->signal_no;
 	info.si_code = SI_QUEUE;
 	info.si_int = nw->bp_id;
-	/* GKI only exports kill_pid + send_sig_info to modules — kill_pid_info,
-	 * do_send_sig_info and group_send_sig_info are not in ksymtab. So we
-	 * fall back to per-thread delivery but explicitly walk every task in
-	 * the tgid so a blocked group leader doesn't strand the signal on some
-	 * other thread's private queue. */
+
+	/* GKI ksymtab exports send_sig_info + kill_pid only; kill_pid_info et al are private.
+	 * Walk every thread so a blocked group leader doesn't strand the signal on its private queue. */
 	{
 		struct task_struct *leader, *t;
 		leader = get_pid_task(nw->pid, PIDTYPE_TGID);
@@ -508,8 +477,6 @@ static void hwbp_notify_worker(struct work_struct *w) {
 			rcu_read_lock();
 			for_each_thread(leader, t) {
 				int r = send_sig_info(nw->signal_no, &info, t);
-				LOGI("hwbp: notify thread pid=%d tgid=%d rc=%d\n",
-				     t->pid, t->tgid, r);
 				if (r == 0) { rc = 0; break; }
 				rc = r;
 			}
@@ -519,9 +486,10 @@ static void hwbp_notify_worker(struct work_struct *w) {
 			rc = -ESRCH;
 		}
 	}
-	LOGI("hwbp: notify deliver sig=%d rc=%d\n", nw->signal_no, rc);
+	if (rc)
+		LOGW_RL("hwbp: notify deliver sig=%d rc=%d\n", nw->signal_no, rc);
 
-	/* Best-effort in_flight clear (tracker may already be gone). */
+	/* Best-effort in_flight clear — tracker may already be gone. */
 	{
 		struct hwbp_tracker *tr;
 		mutex_lock(&hwbp_mutex);
@@ -571,8 +539,7 @@ static int hwbp_validate_address(struct mm_struct *mm, unsigned long addr, u32 b
 	struct vm_area_struct *vma;
 	int rc = 0;
 
-	/* Execute breakpoints trap on the aarch64 4-byte instruction boundary.
-	 * Watchpoints trap on any bp_len-aligned span (arm64 supports 1/2/4/8). */
+	/* X aligns to 4B (single insn); watchpoints align to bp_len (1/2/4/8). */
 	u32 align = (bp_type == DRV_HWBP_TYPE_X) ? DRV_HWBP_LEN_4 : bp_len;
 
 	if (!addr || (addr & (align - 1u)) || addr > ULONG_MAX - bp_len)
@@ -652,8 +619,7 @@ static int hwbp_normalize_install(struct drv_hwbp_install_req *req) {
 	if (!req->bp_len)
 		req->bp_len = (req->bp_type == DRV_HWBP_TYPE_X) ? DRV_HWBP_LEN_4 : DRV_HWBP_LEN_4;
 
-	/* Accept every combination the ARMv8 debug spec allows: X requires len=4
-	 * (single instruction), watchpoints (R/W/RW) allow 1/2/4/8. */
+	/* ARMv8 debug spec: X requires len=4; R/W/RW allow 1/2/4/8. */
 	switch (req->bp_type) {
 	case DRV_HWBP_TYPE_R:
 	case DRV_HWBP_TYPE_W:
@@ -661,9 +627,7 @@ static int hwbp_normalize_install(struct drv_hwbp_install_req *req) {
 		if (req->bp_len != DRV_HWBP_LEN_1 && req->bp_len != DRV_HWBP_LEN_2 &&
 		    req->bp_len != DRV_HWBP_LEN_4 && req->bp_len != DRV_HWBP_LEN_8)
 			return -EOPNOTSUPP;
-		/* pass_through has no fall-through semantics for watchpoints — the
-		 * data access does not advance PC; toggling the address would just
-		 * re-fire on the next load/store to the same location. */
+		/* pass_through is X-only: watchpoint data access does not advance PC. */
 		if (req->pass_through)
 			return -EOPNOTSUPP;
 		break;
@@ -706,16 +670,11 @@ static long hwbp_install(void __user *arg, struct file *owner) {
 	if (rc)
 		goto out_put_pid;
 
-	/* BAIT_GUARD: translate the requested addr into the LARGEST contiguous
-	 * VMA cluster with the same file basename BEFORE we validate the address
-	 * — an AC bait mmap yields a small non-primary cluster; ours resolves
-	 * anywhere in that same file. If translation returned the input as-is,
-	 * the address was already in the largest cluster (or had no file). */
+	/* BAIT_GUARD: redirect the input into the largest contiguous VMA cluster with the same file basename. */
 	if (req.flags & DRV_HWBP_FLAG_BAIT_GUARD) {
 		unsigned long real = translate_bait(mm, (unsigned long)req.addr);
 		if (real && real != (unsigned long)req.addr) {
-			LOGI("hwbp: bait_guard %llx -> %lx\n",
-			     (unsigned long long)req.addr, real);
+			LOGI("hwbp: bait_guard %llx -> %lx\n", (unsigned long long)req.addr, real);
 			req.addr = real;
 		}
 	}
@@ -953,10 +912,7 @@ static long hwbp_clear_all(void) {
 	return 0;
 }
 
-/* fd-scoped cleanup (A.2): remove only the trackers whose owning fd is @f.
- * Called from the file_operations .release path in comm.c so a client crash
- * or explicit close reliably reclaims its own HWBP slots without touching
- * unrelated clients' trackers. */
+/* fd-scoped cleanup (A.2): called from .release, reclaims trackers owned by @f only. */
 void hwbp_clear_by_file(struct file *f) {
 	struct hwbp_tracker *tracker;
 	struct hwbp_tracker *next;
@@ -1020,8 +976,6 @@ static long hwbp_set_sample(void __user *arg) {
 	if (!tracker) { rc = -ENOENT; goto out; }
 	WRITE_ONCE(tracker->sample_every, req.every);
 	WRITE_ONCE(tracker->sample_counter, 0);
-	LOGI("hwbp: set_sample pid=%d addr=%px every=%u -> tracker=%px counter=0\n",
-	     req.pid, (void *)(uintptr_t)req.addr, req.every, tracker);
 	rc = 0;
 out:
 	mutex_unlock(&hwbp_mutex);
@@ -1061,7 +1015,7 @@ out:
 	return rc;
 }
 
-static long hwbp_set_bypass_pid_ioctl(void __user *arg) {
+static long hwbp_set_bypass_pid(void __user *arg) {
 	struct drv_hwbp_bypass_req req;
 	struct hwbp_tracker *tracker;
 	struct pid *pid_ref;
@@ -1075,8 +1029,6 @@ static long hwbp_set_bypass_pid_ioctl(void __user *arg) {
 	tracker = hwbp_lookup_by_pidaddr(req.pid, req.addr, &pid_ref);
 	if (!tracker) { rc = -ENOENT; goto out; }
 	WRITE_ONCE(tracker->bypass_pid, req.bypass_pid);
-	LOGI("hwbp: set_bypass pid=%d addr=%px bypass_pid=%d -> tracker=%px\n",
-	     req.pid, (void *)(uintptr_t)req.addr, req.bypass_pid, tracker);
 	rc = 0;
 out:
 	mutex_unlock(&hwbp_mutex);
@@ -1085,7 +1037,7 @@ out:
 	return rc;
 }
 
-static long hwbp_set_notify_ioctl(void __user *arg) {
+static long hwbp_set_notify(void __user *arg) {
 	struct drv_hwbp_notify_req req;
 	struct hwbp_tracker *tracker;
 	struct pid *pid_ref;
@@ -1124,7 +1076,7 @@ out:
 	return rc;
 }
 
-static long hwbp_translate_bait_ioctl(void __user *arg) {
+static long hwbp_translate_bait(void __user *arg) {
 	struct drv_hwbp_bait_req req;
 	struct task_struct *task;
 	struct mm_struct *mm;
@@ -1149,11 +1101,7 @@ static long hwbp_translate_bait_ioctl(void __user *arg) {
 	return 0;
 }
 
-/* BAIT_GUARD implementation (E.HWBP.6): scan the target mm's VMAs, cluster
- * contiguous ranges that share a file basename, and redirect @addr into the
- * LARGEST such cluster. Callers that pass an address in a legit-looking bait
- * mmap (typical anti-cheat setup) end up placing the HWBP on the true module
- * mapping instead. Returns @addr unchanged when no better target is found. */
+/* BAIT_GUARD (E.HWBP.6): redirect @addr into the largest contiguous VMA cluster sharing @addr's file basename. */
 static bool basename_eq(const struct file *f, const char *want, char *scratch, size_t scratch_len) {
 	char *p;
 	if (!f) return false;
@@ -1307,11 +1255,11 @@ long do_hwbp_ext_cmd(unsigned int cmd, void __user *arg) {
 		return -EOPNOTSUPP;
 	switch (cmd) {
 		case DRV_CMD_HWBP_SET_BYPASS_PID:
-			return hwbp_set_bypass_pid_ioctl(arg);
+			return hwbp_set_bypass_pid(arg);
 		case DRV_CMD_HWBP_SET_NOTIFY:
-			return hwbp_set_notify_ioctl(arg);
+			return hwbp_set_notify(arg);
 		case DRV_CMD_HWBP_TRANSLATE_BAIT:
-			return hwbp_translate_bait_ioctl(arg);
+			return hwbp_translate_bait(arg);
 		default:
 			return -ENOTTY;
 	}
