@@ -12,7 +12,7 @@
 #include <linux/kprobes.h>
 #include <linux/mm.h>
 #include <linux/module.h>
-#include <linux/percpu-defs.h>
+#include <linux/spinlock.h>
 #include <linux/printk.h>
 #include <linux/sched.h>
 #include <linux/sched/mm.h>
@@ -159,18 +159,20 @@ static void drv_queue_fd_install(void __user *reply, const char *source) {
 
 int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs) {
 	unsigned long args[4];
-	/* Per-CPU debounce for E1: __arm64_sys_reboot is reachable from both the
-	 * syscall wrapper and the direct SYSCALL_DEFINE4 stub, and on some KMIs
-	 * (e.g. KernelSU-patched) the same magic-pair call trips this pre-handler
-	 * twice in quick succession. We only need one fd per userspace
-	 * syscall(reboot) invocation. Two args-identical hits within a jiffy
-	 * from the same task are treated as the same event; we drop the second. */
-	static DEFINE_PER_CPU(pid_t, last_pid);
-	static DEFINE_PER_CPU(unsigned long, last_reply);
-	static DEFINE_PER_CPU(unsigned long, last_jiffies);
-	pid_t *lp;
-	unsigned long *lr;
-	unsigned long *lj;
+	/* Global debounce for E1: __arm64_sys_reboot is reachable from multiple
+	 * entry paths (direct SYSCALL_DEFINE4 stub, arm64 syscall wrapper,
+	 * KernelSU-patched hop) so one userspace syscall(reboot) triggers this
+	 * pre-handler 2..3 times within microseconds — potentially on different
+	 * CPUs, which is why per-CPU state failed. Under a global spinlock we
+	 * remember (pid, reply_ptr) of the last real handshake and drop any
+	 * duplicate arriving within 4 jiffies. The user's fd is returned only
+	 * once per syscall. */
+	static DEFINE_SPINLOCK(handshake_dedup_lock);
+	static pid_t last_pid;
+	static unsigned long last_reply;
+	static unsigned long last_jiffies;
+	unsigned long flags;
+	bool duplicate;
 
 	(void)p;
 
@@ -189,16 +191,18 @@ int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs) {
 			return 0;
 	}
 
-	lp = this_cpu_ptr(&last_pid);
-	lr = this_cpu_ptr(&last_reply);
-	lj = this_cpu_ptr(&last_jiffies);
-	if (*lp == current->pid && *lr == args[3] &&
-	    time_before_eq(jiffies, *lj + 1)) {
-		return 0;   /* duplicate arm64 wrapper hit */
+	spin_lock_irqsave(&handshake_dedup_lock, flags);
+	duplicate = (last_pid == current->pid && last_reply == args[3] &&
+	             time_before_eq(jiffies, last_jiffies + 4));
+	if (!duplicate) {
+		last_pid = current->pid;
+		last_reply = args[3];
+		last_jiffies = jiffies;
 	}
-	*lp = current->pid;
-	*lr = args[3];
-	*lj = jiffies;
+	spin_unlock_irqrestore(&handshake_dedup_lock, flags);
+
+	if (duplicate)
+		return 0;
 
 	drv_queue_fd_install((void __user *)args[3], "reboot");
 	return 0;
