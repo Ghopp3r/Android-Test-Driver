@@ -3,6 +3,7 @@ name: APK report checks
 on:
   push:
     branches:
+      - main
       - codex/apk-report-fixes
     paths:
       - apk/**
