@@ -1,0 +1,40 @@
+[ 2688.593360] BEFORE_TEST_MARKER
+[ 2688.706519] KernelSU: newfstatat su->sh!
+[ 2688.706535] KernelSU: faccessat su->sh!
+[ 2688.707657] KernelSU: sys_execve su found
+[ 2688.722425] KernelSU: handle_setresuid from 0 to 0
+[ 2688.743663] [memory-driver] reboot/ptregs handshake hit: pid=15197
+[ 2688.743675] [memory-driver] fd installed: 3 for pid 15197
+[ 2688.743676] [memory-driver] [15197] install fd: 3
+[ 2688.826269] [memory-driver] hwbp: installed pid=15197 addr=000000585daf0440 type=4 len=4 passthrough=0 overrides=0
+[ 2688.826297] [memory-driver] hwbp: installed pid=15197 addr=000000585db17228 type=1 len=4 passthrough=0 overrides=0
+[ 2688.826301] [memory-driver] hwbp: installed pid=15197 addr=000000585db17228 type=2 len=1 passthrough=0 overrides=0
+[ 2688.826306] [memory-driver] hwbp: installed pid=15197 addr=000000585db17228 type=3 len=4 passthrough=0 overrides=0
+[ 2688.826312] [memory-driver] hwbp: installed pid=15197 addr=000000585daf0440 type=4 len=4 passthrough=0 overrides=0
+[ 2688.826371] [memory-driver] hwbp: installed pid=15197 addr=000000585daf0440 type=4 len=4 passthrough=0 overrides=0
+[ 2688.826379] [memory-driver] hwbp: installed pid=15197 addr=000000585daf0440 type=4 len=4 passthrough=0 overrides=0
+[ 2688.826386] [memory-driver] hwbp: installed pid=15197 addr=000000585daf0440 type=4 len=4 passthrough=0 overrides=0
+[ 2688.826394] [memory-driver] hwbp: installed pid=15197 addr=000000585daf04fc type=4 len=4 passthrough=0 overrides=0
+[ 2688.826399] [memory-driver] hwbp: installed pid=15197 addr=000000585daf04fc type=4 len=4 passthrough=0 overrides=0
+[ 2688.826407] [memory-driver] hwbp: installed pid=15197 addr=000000585daf0440 type=4 len=4 passthrough=0 overrides=0
+[ 2688.826536] [memory-driver] hwbp: installed pid=15197 addr=000000585daf0514 type=4 len=4 passthrough=0 overrides=0
+[ 2688.826611] [memory-driver] hwbp: installed pid=15197 addr=000000585daf0440 type=4 len=4 passthrough=0 overrides=0
+[ 2688.826723] [memory-driver] hwbp: installed pid=15197 addr=000000585daf0440 type=4 len=4 passthrough=0 overrides=0
+[ 2688.826914] [memory-driver] hide_task: add name="test_hidden_marker_9f37" slot=0
+[ 2688.864975] [memory-driver] hide_task: add pid=15199 slot=0
+[ 2688.889618] [memory-driver] hide_task: remove pid=15199
+[ 2688.890154] [memory-driver] reboot/ptregs handshake hit: pid=15197
+[ 2688.890169] [memory-driver] fd installed: 4 for pid 15197
+[ 2688.890169] [memory-driver] [15197] install fd: 4
+[ 2688.890205] [memory-driver] hwbp: installed pid=15197 addr=000000585daf0440 type=4 len=4 passthrough=0 overrides=0
+[ 2688.910677] [memory-driver] reboot/ptregs handshake hit: pid=15197
+[ 2688.910704] [memory-driver] fd installed: 4 for pid 15197
+[ 2688.910707] [memory-driver] [15197] install fd: 4
+[ 2688.910780] [memory-driver] hwbp: installed pid=15197 addr=000000585daf0440 type=4 len=4 passthrough=0 overrides=0
+[ 2688.910805] [memory-driver] hwbp: installed pid=15197 addr=000000585daf0440 type=4 len=4 passthrough=0 overrides=0
+[ 2688.910870] [memory-driver] hwbp: installed pid=15197 addr=000000585daf0440 type=4 len=4 passthrough=0 overrides=0
+[ 2689.040456] KernelSU: newfstatat su->sh!
+[ 2689.040476] KernelSU: faccessat su->sh!
+[ 2689.041572] KernelSU: sys_execve su found
+[ 2689.056972] KernelSU: handle_setresuid from 0 to 0
+[ 2689.068427] AFTER_TEST_MARKER
