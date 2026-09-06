@@ -1,0 +1,79 @@
+[ 8678.977462] BEFORE
+[ 8679.263134] KernelSU: newfstatat su->sh!
+[ 8679.263155] KernelSU: faccessat su->sh!
+[ 8679.264202] KernelSU: sys_execve su found
+[ 8679.279018] KernelSU: handle_setresuid from 0 to 0
+[ 8679.295183] [memory-driver] reboot handshake hit: pid=23292
+[ 8679.295188] [memory-driver] reboot handshake hit: pid=23292
+[ 8679.295191] [memory-driver] reboot/ptregs handshake hit: pid=23292
+[ 8679.295195] [memory-driver] reboot/ptregs handshake hit: pid=23292
+[ 8679.295206] [memory-driver] fd installed: 3 for pid 23292
+[ 8679.295207] [memory-driver] [23292] install fd: 3
+[ 8679.295210] [memory-driver] fd installed: 4 for pid 23292
+[ 8679.295211] [memory-driver] [23292] install fd: 4
+[ 8679.295214] [memory-driver] fd installed: 5 for pid 23292
+[ 8679.295215] [memory-driver] [23292] install fd: 5
+[ 8679.295219] [memory-driver] fd installed: 6 for pid 23292
+[ 8679.295220] [memory-driver] [23292] install fd: 6
+[ 8679.375765] [memory-driver] hwbp: installed pid=23292 addr=00000055ef935e9c type=4 len=4 passthrough=0 overrides=0
+[ 8679.375815] [memory-driver] hwbp: installed pid=23292 addr=00000055ef95cd28 type=1 len=4 passthrough=0 overrides=0
+[ 8679.375828] [memory-driver] hwbp: installed pid=23292 addr=00000055ef95cd28 type=2 len=1 passthrough=0 overrides=0
+[ 8679.375841] [memory-driver] hwbp: installed pid=23292 addr=00000055ef95cd28 type=3 len=4 passthrough=0 overrides=0
+[ 8679.375871] [memory-driver] hwbp: installed pid=23292 addr=00000055ef935e9c type=4 len=4 passthrough=0 overrides=0
+[ 8679.375930] [memory-driver] hwbp: installed pid=23292 addr=00000055ef935e9c type=4 len=4 passthrough=0 overrides=0
+[ 8679.375955] [memory-driver] hwbp: installed pid=23292 addr=00000055ef935e9c type=4 len=4 passthrough=0 overrides=0
+[ 8679.375962] [memory-driver] hwbp: installed pid=23292 addr=00000055ef935e9c type=4 len=4 passthrough=0 overrides=0
+[ 8679.375982] [memory-driver] hwbp: installed pid=23292 addr=00000055ef935f58 type=4 len=4 passthrough=0 overrides=0
+[ 8679.375988] [memory-driver] hwbp: installed pid=23292 addr=00000055ef935f58 type=4 len=4 passthrough=0 overrides=0
+[ 8679.376010] [memory-driver] hwbp: installed pid=23292 addr=00000055ef935e9c type=4 len=4 passthrough=0 overrides=0
+[ 8679.376122] [memory-driver] hwbp: installed pid=23292 addr=00000055ef935f70 type=4 len=4 passthrough=0 overrides=0
+[ 8679.376194] [memory-driver] hwbp: installed pid=23292 addr=00000055ef935e9c type=4 len=4 passthrough=0 overrides=0
+[ 8679.376310] [memory-driver] hwbp: installed pid=23292 addr=00000055ef935e9c type=4 len=4 passthrough=0 overrides=0
+[ 8679.376511] [memory-driver] hide_task: add name="test_hidden_marker_9f37" slot=0
+[ 8679.409653] [memory-driver] hide_task: add pid=23294 slot=0
+[ 8679.432030] [memory-driver] hide_task: remove pid=23294
+[ 8679.432720] [memory-driver] reboot handshake hit: pid=23292
+[ 8679.432728] [memory-driver] reboot handshake hit: pid=23292
+[ 8679.432731] [memory-driver] reboot/ptregs handshake hit: pid=23292
+[ 8679.432734] [memory-driver] reboot/ptregs handshake hit: pid=23292
+[ 8679.432743] [memory-driver] fd installed: 7 for pid 23292
+[ 8679.432745] [memory-driver] [23292] install fd: 7
+[ 8679.432748] [memory-driver] fd installed: 8 for pid 23292
+[ 8679.432749] [memory-driver] [23292] install fd: 8
+[ 8679.432752] [memory-driver] fd installed: 9 for pid 23292
+[ 8679.432754] [memory-driver] [23292] install fd: 9
+[ 8679.432757] [memory-driver] fd installed: 10 for pid 23292
+[ 8679.432758] [memory-driver] [23292] install fd: 10
+[ 8679.432788] [memory-driver] hwbp: installed pid=23292 addr=00000055ef933c60 type=4 len=4 passthrough=0 overrides=0
+[ 8679.432798] [memory-driver] hwbp: installed pid=23292 addr=00000055ef933c68 type=4 len=4 passthrough=0 overrides=0
+[ 8679.432806] [memory-driver] hwbp: installed pid=23292 addr=00000055ef933c70 type=4 len=4 passthrough=0 overrides=0
+[ 8679.432813] [memory-driver] hwbp: installed pid=23292 addr=00000055ef933c78 type=4 len=4 passthrough=0 overrides=0
+[ 8679.432820] [memory-driver] hwbp: installed pid=23292 addr=00000055ef933c80 type=4 len=4 passthrough=0 overrides=0
+[ 8679.432827] [memory-driver] hwbp: installed pid=23292 addr=00000055ef933c88 type=4 len=4 passthrough=0 overrides=0
+[ 8679.483334] [memory-driver] hwbp: installed pid=23292 addr=00000055ef933c60 type=4 len=4 passthrough=0 overrides=0
+[ 8679.483396] [memory-driver] hwbp: installed pid=23292 addr=00000055ef933c68 type=4 len=4 passthrough=0 overrides=0
+[ 8679.483430] [memory-driver] hwbp: installed pid=23292 addr=00000055ef933c70 type=4 len=4 passthrough=0 overrides=0
+[ 8679.483459] [memory-driver] hwbp: installed pid=23292 addr=00000055ef933c78 type=4 len=4 passthrough=0 overrides=0
+[ 8679.483491] [memory-driver] hwbp: installed pid=23292 addr=00000055ef933c80 type=4 len=4 passthrough=0 overrides=0
+[ 8679.483524] [memory-driver] hwbp: installed pid=23292 addr=00000055ef933c88 type=4 len=4 passthrough=0 overrides=0
+[ 8679.484056] [memory-driver] reboot handshake hit: pid=23292
+[ 8679.484099] [memory-driver] reboot handshake hit: pid=23292
+[ 8679.484120] [memory-driver] reboot/ptregs handshake hit: pid=23292
+[ 8679.484147] [memory-driver] reboot/ptregs handshake hit: pid=23292
+[ 8679.484199] [memory-driver] fd installed: 10 for pid 23292
+[ 8679.484205] [memory-driver] [23292] install fd: 10
+[ 8679.484218] [memory-driver] fd installed: 11 for pid 23292
+[ 8679.484224] [memory-driver] [23292] install fd: 11
+[ 8679.484238] [memory-driver] fd installed: 12 for pid 23292
+[ 8679.484244] [memory-driver] [23292] install fd: 12
+[ 8679.484254] [memory-driver] fd installed: 13 for pid 23292
+[ 8679.484259] [memory-driver] [23292] install fd: 13
+[ 8679.484288] [memory-driver] hwbp: installed pid=23292 addr=00000055ef935e9c type=4 len=4 passthrough=0 overrides=0
+[ 8679.484312] [memory-driver] hwbp: installed pid=23292 addr=00000055ef935e9c type=4 len=4 passthrough=0 overrides=0
+[ 8679.484411] [memory-driver] hwbp: installed pid=23292 addr=00000055ef935e9c type=4 len=4 passthrough=0 overrides=0
+[ 8679.484462] [memory-driver] hwbp: installed pid=23292 addr=00000055ef95cd28 type=2 len=4 passthrough=0 overrides=0
+[ 8679.782611] KernelSU: newfstatat su->sh!
+[ 8679.782629] KernelSU: faccessat su->sh!
+[ 8679.783564] KernelSU: sys_execve su found
+[ 8679.791665] KernelSU: handle_setresuid from 0 to 0
+[ 8679.797825] AFTER
