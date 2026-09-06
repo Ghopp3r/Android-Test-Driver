@@ -21,10 +21,7 @@ struct driver_install_work {
 
 int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs);
 
-/* Pre-resolve every kallsyms-shimmed function pointer reachable from the
-   reboot kprobe pre-handler. Must be called from init_driver() before the
-   handler kprobe is armed; otherwise the first handshake re-enters
-   register_kprobe in atomic context. */
+/* Call from init_driver() before arming the reboot kprobe. */
 int comm_warm_symbols(void);
 
 void driver_install_fd_tw_func(struct callback_head *twork);

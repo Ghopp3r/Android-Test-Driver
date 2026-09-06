@@ -38,9 +38,7 @@ bool Driver::open() {
         errno = err;
         return false;
     }
-    if (DRV_HWBP_CAPS_GEN(c.flags_supported) != DRV_HWBP_ABI_GENERATION ||
-        c.hit_bytes != sizeof(drv_hwbp_hit) ||
-        c.install_req_bytes != sizeof(drv_hwbp_install_req)) {
+    if (DRV_HWBP_CAPS_GEN(c.flags_supported) != DRV_HWBP_ABI_GENERATION || c.hit_bytes != sizeof(drv_hwbp_hit) || c.install_req_bytes != sizeof(drv_hwbp_install_req)) {
         ::close(m_fd);
         m_fd = -1;
         errno = EPROTO;

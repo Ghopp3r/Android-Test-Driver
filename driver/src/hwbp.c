@@ -431,9 +431,7 @@ static void hwbp_wp_schedule_disable(struct hwbp_tracker *tracker) {
 	queue_work(system_wq, &dw->work);
 }
 
-/* Toggle-forward the execute BP: park it one insn ahead, mark NEXT so the
- * follow-up trap restores the original address. Used by both the success
- * path and by gate-skip when pass_through is set (bug #2). */
+/* Park the BP one insn ahead; the follow-up trap restores the origin. */
 static int hwbp_advance_over_insn(struct hwbp_tracker *tracker, struct perf_event *bp) {
 	int rc = hwbp_set_breakpoint_address(bp, tracker->addr + DRV_HWBP_LEN_EXECUTE);
 	if (rc) {
@@ -445,8 +443,7 @@ static int hwbp_advance_over_insn(struct hwbp_tracker *tracker, struct perf_even
 }
 
 /* Post-skip recovery: execute BP advances / LR-returns, watchpoint auto-disables. */
-static void hwbp_recover_after_skip(struct hwbp_tracker *tracker, struct perf_event *bp,
-                                    struct pt_regs *regs) {
+static void hwbp_recover_after_skip(struct hwbp_tracker *tracker, struct perf_event *bp, struct pt_regs *regs) {
 	if (tracker->bp_type != DRV_HWBP_TYPE_X) {
 		hwbp_wp_schedule_disable(tracker);
 		return;
@@ -562,12 +559,7 @@ static void hwbp_notify_worker(struct work_struct *w) {
 		leader = get_pid_task(nw->pid, PIDTYPE_PID);
 	if (leader) {
 		rcu_read_lock();
-		/* Threads live for the duration of rcu_read_lock; blocked is sigset_t
-		 * (unsigned long[]) read atomically per word. A concurrent
-		 * sys_sigprocmask taking siglock can flip the bit under us — worst
-		 * case we pick a thread that has just started blocking the signal,
-		 * and the signal stays pending on it. Same outcome as picking the
-		 * group leader when nothing is available; not a UAF. */
+		/* rcu_read_lock keeps threads alive; sigset_t is per-word atomic — no UAF. */
 		for_each_thread(leader, t) {
 			if (!sigismember(&t->blocked, nw->signal_no)) {
 				chosen = t;
@@ -624,8 +616,7 @@ static void hwbp_wp_disable_worker(struct work_struct *w) {
 }
 
 /* Lookup by (pid, addr, owner_file). Owner=NULL matches any owner (helpers). */
-static struct hwbp_tracker *hwbp_lookup_locked(struct pid *pid_ref, u64 addr,
-                                               struct file *owner) {
+static struct hwbp_tracker *hwbp_lookup_locked(struct pid *pid_ref, u64 addr, struct file *owner) {
 	struct hwbp_tracker *tracker;
 
 	list_for_each_entry(tracker, &hwbp_trackers, node) {
@@ -745,8 +736,7 @@ static int hwbp_normalize_install(struct drv_hwbp_install_req *req) {
 	case DRV_HWBP_TYPE_R:
 	case DRV_HWBP_TYPE_W:
 	case DRV_HWBP_TYPE_RW:
-		if (req->bp_len != DRV_HWBP_LEN_1 && req->bp_len != DRV_HWBP_LEN_2 &&
-		    req->bp_len != DRV_HWBP_LEN_4 && req->bp_len != DRV_HWBP_LEN_8)
+		if (req->bp_len != DRV_HWBP_LEN_1 && req->bp_len != DRV_HWBP_LEN_2 && req->bp_len != DRV_HWBP_LEN_4 && req->bp_len != DRV_HWBP_LEN_8)
 			return -EOPNOTSUPP;
 		/* pass_through is X-only: watchpoint data access does not advance PC. */
 		if (req->pass_through)
@@ -817,9 +807,7 @@ static long hwbp_install(void __user *arg, struct file *owner) {
 		existing = NULL;
 	}
 	if (existing && existing->mm == mm) {
-		if (existing->bp_type != req.bp_type ||
-		    existing->bp_len != req.bp_len ||
-		    existing->pass_through != req.pass_through) {
+		if (existing->bp_type != req.bp_type || existing->bp_len != req.bp_len || existing->pass_through != req.pass_through) {
 			rc = -EBUSY;
 			mutex_unlock(&hwbp_mutex);
 			goto out_put_task_mm;
@@ -834,8 +822,7 @@ static long hwbp_install(void __user *arg, struct file *owner) {
 			hwbp_set_overrides(existing, &req);
 			if (was_orphaned && existing->bp) {
 				attr_reenable.disabled = 0;
-				(void)drv_call_modify_user_hw_bp(drv_modify_user_hw_bp_ptr,
-				                                 existing->bp, &attr_reenable);
+				(void)drv_call_modify_user_hw_bp(drv_modify_user_hw_bp_ptr, existing->bp, &attr_reenable);
 				WRITE_ONCE(existing->orphaned, 0u);
 			}
 			/* Cancel a pending disable so it can't re-orphan the fresh tracker. */
@@ -886,8 +873,7 @@ static long hwbp_install(void __user *arg, struct file *owner) {
 	}
 	list_add_tail(&tracker->node, &hwbp_trackers);
 	mutex_unlock(&hwbp_mutex);
-	LOGI("hwbp: installed pid=%d addr=%px type=%u len=%u passthrough=%u overrides=%u\n",
-	     req.pid, (void *)(uintptr_t)req.addr, req.bp_type, req.bp_len, req.pass_through, req.override_count);
+	LOGI("hwbp: installed pid=%d addr=%px type=%u len=%u passthrough=%u overrides=%u\n", req.pid, (void *)(uintptr_t)req.addr, req.bp_type, req.bp_len, req.pass_through, req.override_count);
 	rc = 0;
 
 out_put_task_mm:
@@ -1081,13 +1067,8 @@ static long hwbp_get_caps(void __user *arg) {
 	caps.install_req_bytes = sizeof(struct drv_hwbp_install_req);
 	/* Pack ABI generation into flags_supported to keep the struct at 32 bytes. */
 	{
-		u32 flags = DRV_HWBP_FLAG_NOTIFY |
-		            DRV_HWBP_FLAG_CAPTURE_FP |
-		            DRV_HWBP_FLAG_TIMING_BYPASS;
-
-		caps.flags_supported = (flags & DRV_HWBP_CAPS_FLAGS_MASK) |
-		                       ((DRV_HWBP_ABI_GENERATION & DRV_HWBP_ABI_GEN_MASK)
-		                         << DRV_HWBP_ABI_GEN_SHIFT);
+		u32 flags = DRV_HWBP_FLAG_NOTIFY | DRV_HWBP_FLAG_CAPTURE_FP | DRV_HWBP_FLAG_TIMING_BYPASS;
+		caps.flags_supported = (flags & DRV_HWBP_CAPS_FLAGS_MASK) | ((DRV_HWBP_ABI_GENERATION & DRV_HWBP_ABI_GEN_MASK) << DRV_HWBP_ABI_GEN_SHIFT);
 	}
 	caps.fp_ready = hwbp_fp_ready ? 1u : 0u;
 	if (copy_to_user(arg, &caps, sizeof(caps)) != 0)
@@ -1096,8 +1077,7 @@ static long hwbp_get_caps(void __user *arg) {
 }
 
 /* Shared lookup used by every "set_*" ioctl. Enforces fd ownership. */
-static struct hwbp_tracker *hwbp_lookup_by_pidaddr(s32 pid, u64 addr, struct file *owner,
-                                                   struct pid **out_pid_ref) {
+static struct hwbp_tracker *hwbp_lookup_by_pidaddr(s32 pid, u64 addr, struct file *owner, struct pid **out_pid_ref) {
 	struct pid *pid_ref;
 	struct hwbp_tracker *tracker;
 

@@ -136,8 +136,7 @@ void test_caps() {
 		FAIL("S3_hwbp_caps", "hit_bytes=%u expected=%zu", c->hit_bytes, sizeof(drv_hwbp_hit));
 		return;
 	}
-	PASS("S3_hwbp_caps", "brps=%u wrps=%u ring=%u fp_ready=%u",
-	     c->num_brps, c->num_wrps, c->ring_slots, c->fp_ready);
+	PASS("S3_hwbp_caps", "brps=%u wrps=%u ring=%u fp_ready=%u", c->num_brps, c->num_wrps, c->ring_slots, c->fp_ready);
 }
 
 // S4 — install matrix (needs a live target; use own pid + a benign address)
@@ -353,8 +352,7 @@ void test_fpsimd_capture() {
 	if (hits[0].q_lo[0] == lo && hits[0].q_hi[0] == hi)
 		PASS("S9_fp_capture", "Q0 captured lo=%016" PRIx64 " hi=%016" PRIx64, hits[0].q_lo[0], hits[0].q_hi[0]);
 	else if (hits[0].q_lo[0] != 0 || hits[0].q_hi[0] != 0)
-		PASS("S9_fp_capture", "FP snapshot present (Q0=%016" PRIx64 ":%016" PRIx64 " — libc call clobbered pattern)",
-		     hits[0].q_hi[0], hits[0].q_lo[0]);
+		PASS("S9_fp_capture", "FP snapshot present (Q0=%016" PRIx64 ":%016" PRIx64 " — libc call clobbered pattern)", hits[0].q_hi[0], hits[0].q_lo[0]);
 	else
 		FAIL("S9_fp_capture", "Q0 all zero — snapshot did not populate");
 }
@@ -406,11 +404,7 @@ void test_timing_detector() {
 	double base_per = (double)base_ns / REPS;
 	double hwbp_per = (double)hwbp_ns / REPS;
 	double tb_per = (double)tb_ns / REPS;
-	PASS("S11_timing",
-	     "per-call ns: base=%.1f hwbp=%.1f timing_bypass=%.1f (ratio %.2fx vs %.2fx)",
-	     base_per, hwbp_per, tb_per,
-	     hwbp_per / (base_per > 0 ? base_per : 1.0),
-	     tb_per / (base_per > 0 ? base_per : 1.0));
+	PASS("S11_timing", "per-call ns: base=%.1f hwbp=%.1f timing_bypass=%.1f (ratio %.2fx vs %.2fx)", base_per, hwbp_per, tb_per, hwbp_per / (base_per > 0 ? base_per : 1.0), tb_per / (base_per > 0 ? base_per : 1.0));
 }
 
 // S12 — file hide (hide_task_name)
@@ -429,8 +423,7 @@ void test_file_hide() {
 	std::fclose(f);
 
 	// Verify visible without hiding.
-	bool seen_before = file_grep("/data/local/tmp/", marker) ||
-	                   [&]{ struct stat st; return stat(path.c_str(), &st) == 0; }();
+	bool seen_before = file_grep("/data/local/tmp/", marker) || [&]{ struct stat st; return stat(path.c_str(), &st) == 0; }();
 	if (!seen_before) SKIP("S12_file_hide", "marker not created?");
 
 	// Ask driver to hide the exact basename.
@@ -575,8 +568,7 @@ void test_fd_owner_isolation() {
 	// And drop alt's own tracker: remove() must fail with ENOENT specifically, not any other error.
 	errno = 0;
 	if (alt.hwbp.remove(addr) || errno != ENOENT) {
-		FAIL("S15_fd_owner", "alt.remove() after clearAll: got ok=%d errno=%d, expected fail+ENOENT",
-		     (int)alt.hwbp.remove(addr), errno);
+		FAIL("S15_fd_owner", "alt.remove() after clearAll: got ok=%d errno=%d, expected fail+ENOENT", (int)alt.hwbp.remove(addr), errno);
 		return;
 	}
 	// Primary's tracker must survive; its remove() should still succeed.
@@ -697,8 +689,7 @@ void test_caps_no_overflow() {
 		return;
 	}
 	if (buf.canary[0] != 0xDEADC0DEu || buf.canary[1] != 0xFEEDFACEu) {
-		FAIL("S21_caps_size", "GET_CAPS wrote past 32 bytes; canary=%08x %08x",
-		     buf.canary[0], buf.canary[1]);
+		FAIL("S21_caps_size", "GET_CAPS wrote past 32 bytes; canary=%08x %08x", buf.canary[0], buf.canary[1]);
 		return;
 	}
 	gen = DRV_HWBP_CAPS_GEN(buf.c.flags_supported);
@@ -755,10 +746,8 @@ void test_stale_mm_dropped() {
 		SKIP("S22_stale_mm", "first install never took; skip mm-race check");
 		return;
 	}
-	if (second_ok || second_err == EFAULT || second_err == EINVAL ||
-	    second_err == ESRCH || second_err == EOPNOTSUPP)
-		PASS("S22_stale_mm", "second install after exec: ok=%d errno=%d (stale mm handled)",
-		     second_ok, second_err);
+	if (second_ok || second_err == EFAULT || second_err == EINVAL || second_err == ESRCH || second_err == EOPNOTSUPP)
+		PASS("S22_stale_mm", "second install after exec: ok=%d errno=%d (stale mm handled)", second_ok, second_err);
 	else
 		FAIL("S22_stale_mm", "second install returned unexpected errno=%d", second_err);
 }

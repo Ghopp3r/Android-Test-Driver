@@ -404,8 +404,7 @@ int sensor_hook_init(unsigned long probe_offset, int layout_profile) {
 	mutex_lock(&sensor_bind_lock);
 
 	if (uprobe_armed) {
-		ret = (armed_probe_offset == probe_offset &&
-		       armed_layout_profile == layout_profile) ? 0 : -EBUSY;
+		ret = (armed_probe_offset == probe_offset && armed_layout_profile == layout_profile) ? 0 : -EBUSY;
 		goto out_unlock;
 	}
 

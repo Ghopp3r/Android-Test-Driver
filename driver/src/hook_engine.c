@@ -26,14 +26,8 @@ typedef void (*drv_caches_clean_inval_pou_fn_t)(unsigned long start, unsigned lo
 static drv_aarch64_insn_patch_text_fn_t drv_aarch64_insn_patch_text_ptr;
 static drv_caches_clean_inval_pou_fn_t drv_caches_clean_inval_pou_ptr;
 
-static __nocfi noinline int drv_call_aarch64_insn_patch_text(drv_aarch64_insn_patch_text_fn_t fn,
-		void *addrs[], u32 insns[], int cnt) {
-	return fn(addrs, insns, cnt);
-}
-static __nocfi noinline void drv_call_caches_clean_inval_pou(drv_caches_clean_inval_pou_fn_t fn,
-		unsigned long s, unsigned long e) {
-	fn(s, e);
-}
+static __nocfi noinline int drv_call_aarch64_insn_patch_text(drv_aarch64_insn_patch_text_fn_t fn, void *addrs[], u32 insns[], int cnt) { return fn(addrs, insns, cnt); }
+static __nocfi noinline void drv_call_caches_clean_inval_pou(drv_caches_clean_inval_pou_fn_t fn, unsigned long s, unsigned long e) { fn(s, e); }
 
 /* Lazy-resolve from process context; caches_clean_inval_pou is 5.15+ (fallback fences on older KMIs). */
 static void hook_engine_resolve_symbols(void) {
@@ -393,8 +387,7 @@ int relocate_inst(hook_t *hook, u64 inst_addr, u32 inst) {
 #define B_REL_RANGE ((1u << 25) << 2)
 
 static u32 can_b_rel(u64 src_addr, u64 dst_addr) {
-	return ((dst_addr >= src_addr) && (dst_addr - src_addr <= B_REL_RANGE)) ||
-	       ((src_addr >= dst_addr) && (src_addr - dst_addr <= B_REL_RANGE));
+	return ((dst_addr >= src_addr) && (dst_addr - src_addr <= B_REL_RANGE)) || ((src_addr >= dst_addr) && (src_addr - dst_addr <= B_REL_RANGE));
 }
 
 s32 branch_relative(u32 *buf, u64 src_addr, u64 dst_addr) {

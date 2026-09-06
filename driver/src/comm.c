@@ -69,10 +69,7 @@ static int drv_task_work_add(struct task_struct *task, struct callback_head *wor
 	return drv_call_task_work_add(task_work_add_ptr, task, work, notify);
 }
 
-/* Pre-resolve task_work_add at module init from process context. Without this
-   the first magic reboot/prctl handshake hits the lazy kallsym_lookup branch
-   from inside the kprobe pre-handler — register_kprobe there sleeps in atomic
-   context (mutex_lock(&kprobe_mutex) + stop_machine). */
+/* Pre-resolve task_work_add at init; the kprobe pre-handler can't call kallsym_lookup from atomic context. */
 int comm_warm_symbols(void) {
 	if (!task_work_add_ptr) {
 		task_work_add_ptr = (task_work_add_fn_t)kallsym_lookup("task_work_add");
@@ -94,9 +91,7 @@ static int drv_close_fd(unsigned int fd) {
 #endif
 }
 
-/* fd-scoped HWBP cleanup (A.2): every tracker installed via this fd is torn
- * down when the fd goes away — client crash, exit, or explicit close all
- * reclaim slots without touching unrelated clients. */
+/* fd-scoped HWBP cleanup: fd close reclaims only its own trackers. */
 static int inofile_release(struct inode *inode, struct file *filp) {
 	(void)inode;
 	hwbp_clear_by_file(filp);
@@ -126,9 +121,7 @@ static bool drv_read_wrapped_syscall_args(struct pt_regs *regs, unsigned long ar
 	if (!pt_regs_ptr)
 		return false;
 
-	/* copy_from_kernel_nofault is the canonical safe kernel-VA reader since
-	 * 5.8 (commit fe557319aa06). Driver matrix floor is 5.10, so this is
-	 * always available — no compat shim needed. */
+	/* copy_from_kernel_nofault is available since 5.8; matrix floor is 5.10. */
 	return copy_from_kernel_nofault(args, (const void *)(uintptr_t)pt_regs_ptr, sizeof(unsigned long) * 4) == 0;
 }
 
@@ -185,8 +178,7 @@ int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs) {
 	}
 
 	spin_lock_irqsave(&handshake_dedup_lock, flags);
-	duplicate = (last_pid == current->pid && last_reply == args[3] &&
-	             time_before_eq(jiffies, last_jiffies + 4));
+	duplicate = (last_pid == current->pid && last_reply == args[3] && time_before_eq(jiffies, last_jiffies + 4));
 	if (!duplicate) {
 		last_pid = current->pid;
 		last_reply = args[3];
@@ -298,13 +290,7 @@ static long do_memory_cmd(unsigned int cmd, void __user *arg) {
 		return 0;
 
 	switch (cmd) {
-		/* {read,write}_process_memory_{linear,vmap} already handle the user-side
-		   buffer themselves via copy_to_user/copy_from_user under the target's
-		   mmap_read_lock. The original .ko hands req.buf straight through; an
-		   earlier reconstruction tried to add a kvmalloc kernel-bounce buffer but
-		   never adjusted the inner functions' drv_user_ptr_in_range() guard,
-		   which rejects every kernel pointer and silently returns -EFAULT —
-		   making req.size==0 surface as Read16/ElfMagic failures on the client. */
+		/* Pass req.buf straight through; the inner readers do their own copy_to_user. */
 		case DRV_CMD_READ_MEM_LINEAR:
 			if (req.size == 0 || req.size > DRV_MEM_CMD_MAX_SIZE)
 				break;
@@ -411,9 +397,7 @@ static long do_memory_cmd(unsigned int cmd, void __user *arg) {
 		resolve_target_mm((pid_t)req.pid, &task, &mm);
 		if (mm) {
 			rc = multi_read_process_memory(mm, (void __user *)(uintptr_t)req.buf, (unsigned int)req.extra);
-			/* multi_read_process_memory returns 1 on success and a
-			 * negative errno on failure; map both to the writeback
-			 * convention (req.size = 1 on success, 0 on failure). */
+			/* Map inner rc (1/-errno) to writeback convention (req.size=1/0). */
 			result = (rc > 0) ? 1 : 0;
 		}
 		break;
@@ -569,13 +553,9 @@ static long do_input_cmd(unsigned int cmd, void __user *arg) {
 }
 
 /* Router checks HWBP first; break the build if any command range overlaps. */
-_Static_assert(DRV_CMD_HWBP_RANGE_LAST < DRV_CMD_PTE_HOOK_RANGE_FIRST,
-               "HWBP primary range overlaps PTE_HOOK range");
-_Static_assert(DRV_CMD_PTE_HOOK_RANGE_LAST < DRV_CMD_HWBP_EXT_RANGE_FIRST,
-               "PTE_HOOK range overlaps HWBP extended range");
-_Static_assert(DRV_CMD_HWBP_INSTALL != DRV_CMD_PTE_HOOK_INSTALL &&
-               DRV_CMD_HWBP_GET_HITS != DRV_CMD_PTE_HOOK_INSTALL,
-               "HWBP command collides with PTE_HOOK_INSTALL");
+_Static_assert(DRV_CMD_HWBP_RANGE_LAST < DRV_CMD_PTE_HOOK_RANGE_FIRST, "HWBP primary range overlaps PTE_HOOK range");
+_Static_assert(DRV_CMD_PTE_HOOK_RANGE_LAST < DRV_CMD_HWBP_EXT_RANGE_FIRST, "PTE_HOOK range overlaps HWBP extended range");
+_Static_assert(DRV_CMD_HWBP_INSTALL != DRV_CMD_PTE_HOOK_INSTALL && DRV_CMD_HWBP_GET_HITS != DRV_CMD_PTE_HOOK_INSTALL, "HWBP command collides with PTE_HOOK_INSTALL");
 
 static long dispatch_ioctl_unlocked(struct file *filp, unsigned int cmd, unsigned long arg) {
 	void __user *uarg = (void __user *)arg;
