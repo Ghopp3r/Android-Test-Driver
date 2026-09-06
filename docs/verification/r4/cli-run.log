@@ -1,0 +1,32 @@
+== my-driver-test starting (pid=12706) ==
+[PASS] S1_driver_open                           handshake ok
+[PASS] S2_proc_modules_hidden                   not listed
+[PASS] S2_sys_module_hidden                     not listed
+[PASS] S2_vmallocinfo_hidden                    no matching entry
+[PASS] S3_hwbp_caps                             brps=6 wrps=4 ring=32 fp_ready=1
+[PASS] S4_X_len4                                ok=1 expected=1
+[PASS] S4_X_len8_should_reject                  ok=0 expected=0
+[PASS] S4_R_len4                                ok=1 expected=1
+[PASS] S4_W_len1                                ok=1 expected=1
+[PASS] S4_RW_len4                               ok=1 expected=1
+[PASS] S4_R_passthru_should_reject              ok=0 expected=0
+[PASS] S5_bypass_pid                            baseline=2 bypassed=1 (Δ=1)
+[PASS] S6_sample                                baseline=6 every=3 gated=2 (expected ≲3)
+[PASS] S7_conditional                           baseline=3 gated=1 (only X0==42 leaked through)
+[PASS] S8_notify                                signal 42 received si_int=522
+[PASS] S9_fp_capture                            Q0 captured lo=cafef00ddeadbeef hi=0123456789abcdef
+[PASS] S10_translate_bait                       in=0x5c158423e0x out=0x5c1582c3e0x
+[PASS] S11_timing                               per-call ns: base=3.4 hwbp=1064.1 timing_bypass=601.7 (ratio 309.68x vs 175.11x)
+[PASS] S12_file_hide                            marker vanished from readdir
+[PASS] S13_pid_hide                             pid 12708 vanished from /proc
+[PASS] S14_fd_scoped                            release() freed all 6 HW slots (primary reinstalled every one)
+[PASS] S15_fd_owner                             alt.clearAll dropped only alt; primary intact and removable
+[PASS] S16_bait_key                             BAIT_GUARD accepted, tracker key unchanged
+[PASS] S17_wp_oneshot                           watchpoint fired (32 hits) and auto-disabled
+[PASS] S18_hits_legacy                          legacy 0x43 returned EPROTO as designed
+[PASS] S19_bait_deprecated                      BAIT_GUARD dropped; flags=0xe gen=2
+[PASS] S20_pte_routing                          PTE_HOOK_INSTALL reached PTE handler (errno=22)
+[PASS] S21_caps_size                            caps=32B, canary intact, gen=2
+[SKIP] S22_stale_mm                             first install never took; skip mm-race check
+
+== summary: 28 PASS, 0 FAIL, 1 SKIP ==

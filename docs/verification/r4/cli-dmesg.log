@@ -1,0 +1,305 @@
+[ 1554.001302] BEFORE
+[ 1554.069038] PM: suspend entry (s2idle)
+[ 1554.082646] Filesystems sync: 0.013 seconds
+[ 1554.091174] Freezing user space processes
+[ 1554.125189] Freezing user space processes completed (elapsed 0.034 seconds)
+[ 1554.125199] OOM killer disabled.
+[ 1554.125202] Freezing remaining freezable tasks
+[ 1554.138707] Freezing remaining freezable tasks completed (elapsed 0.013 seconds)
+[ 1554.138716] printk: Suspending console(s) (use no_console_suspend to debug)
+[ 1554.140506] [info ] syna_dev_suspend: syna_dev_suspend: pm_resume_flag:0
+[ 1554.141016] [kworke][0xa7136462c][18:02:51.982094] peach_v2: [11769:I:HDD] hdd_suspend_wlan: WLAN being suspended by OS
+[ 1554.141642] [binder][0xa71367534][18:02:51.982721] peach_v2: [11726:I:HDD] __wlan_hdd_bus_suspend: starting bus suspend
+[ 1554.141669] [binder][0xa7136773e][18:02:51.982748] peach_v2: [11726:I:PMO] pmo_core_enable_wow_in_fw: drv wow is enabled
+[ 1554.141674] [binder][0xa713677a0][18:02:51.982753] peach_v2: [11726:I:PMO] pmo_core_enable_wow_in_fw: system suspend wow
+[ 1554.225156] [binder][0xa714eecc8][18:02:52.066235] peach_v2: [11726:I:HDD] __wlan_hdd_bus_suspend: bus suspend succeeded
+[ 1554.227948] [haptic_hv]<right>aw8693x_stop: enter
+[ 1554.227949] [haptic_hv]<left>aw8693x_stop: enter
+[ 1554.232101] [haptic_hv]<left>aw8693x_wait_enter_standby: entered standby!
+[ 1554.232347] [haptic_hv]<right>aw8693x_wait_enter_standby: entered standby!
+[ 1554.256162] q2spi_geni_suspend PID=11726
+[ 1554.265305] Enabled Clocks:
+[ 1554.265308] Enabled clocks:
+[ 1554.265369] No clocks enabled.
+[ 1554.265389] count: last 0 now 0, enter vdd min failed
+[ 1554.265420] [PM_V] get modemsleeptime 0
+[ 1554.265425] [PM_V] get modemawaketime 0,current_sleep=0
+[ 1554.265428] [PM_V] get physlinktime 0
+[ 1554.265430] [PM_V] APP wake for      0.344 s, lcd on for     0 s   0 %
+[ 1554.265434] [PM_V] modem wake for          0 ms(get_directly )    0 %o,modem sleep for          0 --00
+[ 1554.265438] [PM_V] modem_phys_link_total_time    0 min    0 s
+[ 1554.265440] [PM_V] deta_physlink_s    0 min    0 s during app wake
+[ 1554.265443] [PM_V] zsw_pm_debug_suspend new 1
+[ 1554.265467] [PM_V] zsw_pm_record_suspend_stats error 
+[ 1554.265531] suspend ns:    1554265531971      suspend cycles:      44851446025
+[ 1554.265548] resume cycles:      44851946118
+[ 1554.265642] [irq][0xa71626a15][18:02:52.132760] peach_v2: [0:F:HIF] hif_wake_interrupt_handler: wake interrupt received on irq 345
+[ 1554.265962] PM: PM: Pending Wakeup Sources: [timerfd] 
+[ 1554.288620] q2spi_geni_resume PID=11726
+[ 1554.291591] [binder][0xa716a04c4][18:02:52.158715] peach_v2: [11726:I:HDD] wlan_hdd_bus_resume: starting bus resume
+[ 1554.292081] [binder][0xa716a299f][18:02:52.159206] peach_v2: [11726:I:PMO] pmo_core_psoc_send_host_wakeup_ind_to_fw: Host wakeup indication sent to fw
+[ 1554.309444] [soft_i][0xa716f3fbd][18:02:52.176568] peach_v2: [0:I:WMA] WLAN triggered wakeup: BPF_ALLOW (39), vdev: 0 (STA)
+[ 1554.309546] [soft_i][0xa716f4784][18:02:52.176671] peach_v2: [0:I:WMA] WLAN wake reason counters:
+[ 1554.309552] [soft_i][0xa716f47f4][18:02:52.176677] peach_v2: [0:I:WMA] uc:1775 bc:0 v4_mc:0 v6_mc:0 ra:0 ns:0 na:0 icmp:0 icmpv6:0
+[ 1554.309568] [soft_i][0xa716f4923][18:02:52.176693] peach_v2: [0:I:WMA] assoc:0 disassoc:0 assoc_resp:0 reassoc:0 reassoc_resp:0 auth:0 deauth:0 action:1
+[ 1554.309573] [soft_i][0xa716f4991][18:02:52.176699] peach_v2: [0:I:WMA] pno_match:0 pno_complete:0 gscan:0 low_rssi:0 rssi_breach:0 oem:0 ucdrop:0 scan_11d:1 fatal_event:0
+[ 1554.309583] [soft_i][0xa716f4a49][18:02:52.176708] peach_v2: [0:I:WMA] wma_wake_event_packet: Wake event packet:
+[ 1554.309600] [binder][0xa716f4b95][18:02:52.176726] peach_v2: [11726:I:HDD] wlan_hdd_bus_resume: bus resume succeeded
+[ 1554.309637] [soft_i][0xa716f4e57][18:02:52.176762] peach_v2: [0:I:WMA] WOW Wakeup: IPV4 TCP Packet rcvd
+[ 1554.309644] [soft_i][0xa716f4ed8][18:02:52.176769] peach_v2: [0:I:WMA] src addr 192:168:50:212
+[ 1554.309649] [soft_i][0xa716f4f35][18:02:52.176774] peach_v2: [0:I:WMA] dst addr 192:168:50:110
+[ 1554.309662] [soft_i][0xa716f502e][18:02:52.176787] peach_v2: [0:I:WMA] WLAN wake reason counters:
+[ 1554.309666] [soft_i][0xa716f508d][18:02:52.176792] peach_v2: [0:I:WMA] uc:1776 bc:0 v4_mc:0 v6_mc:0 ra:0 ns:0 na:0 icmp:0 icmpv6:0
+[ 1554.309672] [soft_i][0xa716f50f1][18:02:52.176797] peach_v2: [0:I:WMA] assoc:0 disassoc:0 assoc_resp:0 reassoc:0 reassoc_resp:0 auth:0 deauth:0 action:1
+[ 1554.309677] [soft_i][0xa716f5156][18:02:52.176802] peach_v2: [0:I:WMA] pno_match:0 pno_complete:0 gscan:0 low_rssi:0 rssi_breach:0 oem:0 ucdrop:0 scan_11d:1 fatal_event:0
+[ 1554.310079] [info ] syna_dev_resume: syna_dev_resume: pm_resume_flag:1
+[ 1554.310285] [kworke][0xa716f7ede][18:02:52.177410] peach_v2: [11764:I:HDD] hdd_resume_wlan: WLAN being resumed by OS
+[ 1554.310508] [kworke][0xa716f8fa0][18:02:52.177633] peach_v2: [11764:E:HDD] hdd_disable_ns_offload: Failed to disable NS Offload
+[ 1554.310622] [kworke][0xa716f9710][18:02:52.177732] peach_v2: [11764:E:HDD] hdd_restart_tsf_sync_post_wlan_resume: Host TSF sync is not initialized!!
+[ 1554.310714] [kworke][0xa716f9f12][18:02:52.177839] peach_v2: [11764:E:HDD] hdd_disable_ns_offload: Failed to disable NS Offload
+[ 1554.310786] [kworke][0xa716fa488][18:02:52.177912] peach_v2: [11764:E:HDD] hdd_restart_tsf_sync_post_wlan_resume: Host TSF sync is not initialized!!
+[ 1554.311248] [kworke][0xa716fc722][18:02:52.178373] peach_v2: [12002:W:TWT] wlan_twt_requestor_enable: twt requestor ini is not enabled
+[ 1554.311253] [kworke][0xa716fc78f][18:02:52.178379] peach_v2: [12002:W:OSIF] osif_twt_requestor_enable: Failed to send TWT requestor enable command
+[ 1554.311269] [PM_V] get modemsleeptime 0
+[ 1554.311280] [PM_V] get modemawaketime 0,current_sleep=0
+[ 1554.311288] [PM_V] get physlinktime 0
+[ 1554.311290] [PM_V] modem total sleep: 0 s,modem total awake 0 s
+[ 1554.311293] [PM_V] app total sleep: 36 s,app total awake: 112 s,lcd on total: 0 s
+[ 1554.311295] [PM_V] APP sleep for   0.068 s, modem wake      0 ms,(get_directly ),  0 %o
+[ 1554.311300] [PM_V] modem_sleep for   0 ---00
+[ 1554.311303] [PM_V] PhysLinkTotalTime    0 min    0, DetaPhyslink    0 min    0 in this time
+[ 1554.311306] PM notify app resume
+[ 1554.311311] [PM_V] zsw_pm_debug_resume new 1
+[ 1554.311351] [PM_V] zsw_pm_record_resume_stats error 
+[ 1554.311352] [PM_V] zsw_pm_resume_calculate_wakepercent zsw_getsmem_error
+[ 1554.313266] OOM killer enabled.
+[ 1554.313268] Restarting tasks ... done.
+[ 1554.344360] random: crng reseeded on system resumption
+[ 1554.344396] Abort: Pending Wakeup Sources: [timerfd] 
+[ 1554.344443] adsp_sleepmon: PM_POST_SUSPEND
+[ 1554.344490] PM: suspend exit
+[ 1554.344524] adsp_sleepmon: timer_event = 0,suspend_event = 1
+[ 1554.354009] KernelSU: newfstatat su->sh!
+[ 1554.354018] KernelSU: faccessat su->sh!
+[ 1554.354657] KernelSU: sys_execve su found
+[ 1554.363851] KernelSU: handle_setresuid from 0 to 0
+[ 1554.380940] [memory-driver] reboot handshake hit: pid=12706
+[ 1554.380957] [memory-driver] fd installed: 3 for pid 12706
+[ 1554.380960] [memory-driver] [12706] install fd: 3
+[ 1554.445199] PM: suspend entry (s2idle)
+[ 1554.461483] Filesystems sync: 0.016 seconds
+[ 1554.509461] Freezing user space processes
+[ 1554.536596] Freezing user space processes completed (elapsed 0.027 seconds)
+[ 1554.536606] OOM killer disabled.
+[ 1554.536608] Freezing remaining freezable tasks
+[ 1554.541992] Freezing remaining freezable tasks completed (elapsed 0.005 seconds)
+[ 1554.542001] printk: Suspending console(s) (use no_console_suspend to debug)
+[ 1554.550603] [info ] syna_dev_suspend: syna_dev_suspend: pm_resume_flag:0
+[ 1554.550929] [kworke][0xa71b5ff31][18:02:52.418054] peach_v2: [11765:I:HDD] hdd_suspend_wlan: WLAN being suspended by OS
+[ 1554.551559] [binder][0xa71b62e77][18:02:52.418684] peach_v2: [11726:I:HDD] __wlan_hdd_bus_suspend: starting bus suspend
+[ 1554.551589] [binder][0xa71b630b2][18:02:52.418714] peach_v2: [11726:I:PMO] pmo_core_enable_wow_in_fw: drv wow is enabled
+[ 1554.551594] [binder][0xa71b6311a][18:02:52.418719] peach_v2: [11726:I:PMO] pmo_core_enable_wow_in_fw: system suspend wow
+[ 1554.633071] [binder][0xa71ce0fdf][18:02:52.500196] peach_v2: [11726:I:HDD] __wlan_hdd_bus_suspend: bus suspend succeeded
+[ 1554.635853] [haptic_hv]<right>aw8693x_stop: enter
+[ 1554.635855] [haptic_hv]<left>aw8693x_stop: enter
+[ 1554.640564] [haptic_hv]<right>aw8693x_wait_enter_standby: entered standby!
+[ 1554.640873] [haptic_hv]<left>aw8693x_wait_enter_standby: entered standby!
+[ 1554.653592] q2spi_geni_suspend PID=11726
+[ 1554.662534] Enabled Clocks:
+[ 1554.662538] Enabled clocks:
+[ 1554.662597] No clocks enabled.
+[ 1554.662617] count: last 0 now 0, enter vdd min failed
+[ 1554.662647] [PM_V] get modemsleeptime 0
+[ 1554.662651] [PM_V] get modemawaketime 0,current_sleep=0
+[ 1554.662655] [PM_V] get physlinktime 0
+[ 1554.662657] [PM_V] APP wake for      0.352 s, lcd on for     0 s   0 %
+[ 1554.662661] [PM_V] modem wake for          0 ms(get_directly )    0 %o,modem sleep for          0 --00
+[ 1554.662665] [PM_V] modem_phys_link_total_time    0 min    0 s
+[ 1554.662668] [PM_V] deta_physlink_s    0 min    0 s during app wake
+[ 1554.662670] [PM_V] zsw_pm_debug_suspend new 1
+[ 1554.662693] [PM_V] zsw_pm_record_suspend_stats error 
+[ 1554.662758] suspend ns:    1554662758690      suspend cycles:      44859572871
+[ 1554.662776] resume cycles:      44879555765
+[ 1554.662868] [irq][0xa7307b42f][18:02:53.570762] peach_v2: [0:F:HIF] hif_wake_interrupt_handler: wake interrupt received on irq 345
+[ 1554.663172] PM: PM: Pending Wakeup Sources: [timerfd] 
+[ 1554.686000] q2spi_geni_resume PID=11726
+[ 1554.689440] [binder][0xa730f7da5][18:02:53.597340] peach_v2: [11726:I:HDD] wlan_hdd_bus_resume: starting bus resume
+[ 1554.689801] [binder][0xa730f98d6][18:02:53.597702] peach_v2: [11726:I:PMO] pmo_core_psoc_send_host_wakeup_ind_to_fw: Host wakeup indication sent to fw
+[ 1554.696696] [soft_i][0xa73119dbf][18:02:53.604595] peach_v2: [0:I:WMA] WLAN triggered wakeup: BPF_ALLOW (39), vdev: 0 (STA)
+[ 1554.696811] [soft_i][0xa7311a68d][18:02:53.604712] peach_v2: [0:I:WMA] WLAN wake reason counters:
+[ 1554.696817] [soft_i][0xa7311a6fc][18:02:53.604718] peach_v2: [0:I:WMA] uc:1776 bc:0 v4_mc:0 v6_mc:0 ra:0 ns:0 na:0 icmp:0 icmpv6:0
+[ 1554.696823] [soft_i][0xa7311a773][18:02:53.604724] peach_v2: [0:I:WMA] assoc:0 disassoc:0 assoc_resp:0 reassoc:0 reassoc_resp:0 auth:0 deauth:0 action:1
+[ 1554.696829] [soft_i][0xa7311a7e5][18:02:53.604730] peach_v2: [0:I:WMA] pno_match:0 pno_complete:0 gscan:0 low_rssi:0 rssi_breach:0 oem:0 ucdrop:0 scan_11d:1 fatal_event:0
+[ 1554.696838] [soft_i][0xa7311a89c][18:02:53.604739] peach_v2: [0:I:WMA] wma_wake_event_packet: Wake event packet:
+[ 1554.696882] [soft_i][0xa7311abde][18:02:53.604783] peach_v2: [0:I:WMA] WOW Wakeup: IPV4 TCP Packet rcvd
+[ 1554.696887] [soft_i][0xa7311ac45][18:02:53.604788] peach_v2: [0:I:WMA] src addr 192:168:50:212
+[ 1554.696892] [soft_i][0xa7311acaa][18:02:53.604793] peach_v2: [0:I:WMA] dst addr 192:168:50:110
+[ 1554.696905] [soft_i][0xa7311ad9d][18:02:53.604806] peach_v2: [0:I:WMA] WLAN wake reason counters:
+[ 1554.696910] [soft_i][0xa7311adfd][18:02:53.604811] peach_v2: [0:I:WMA] uc:1777 bc:0 v4_mc:0 v6_mc:0 ra:0 ns:0 na:0 icmp:0 icmpv6:0
+[ 1554.696915] [soft_i][0xa7311ae5e][18:02:53.604816] peach_v2: [0:I:WMA] assoc:0 disassoc:0 assoc_resp:0 reassoc:0 reassoc_resp:0 auth:0 deauth:0 action:1
+[ 1554.696920] [soft_i][0xa7311aec0][18:02:53.604821] peach_v2: [0:I:WMA] pno_match:0 pno_complete:0 gscan:0 low_rssi:0 rssi_breach:0 oem:0 ucdrop:0 scan_11d:1 fatal_event:0
+[ 1554.697077] [binder][0xa7311ba87][18:02:53.604978] peach_v2: [11726:I:HDD] wlan_hdd_bus_resume: bus resume succeeded
+[ 1554.697587] [info ] syna_dev_resume: syna_dev_resume: pm_resume_flag:1
+[ 1554.697994] [kworke][0xa7311ff48][18:02:53.605895] peach_v2: [11766:I:HDD] hdd_resume_wlan: WLAN being resumed by OS
+[ 1554.698206] [kworke][0xa73120f29][18:02:53.606107] peach_v2: [11766:E:HDD] hdd_disable_ns_offload: Failed to disable NS Offload
+[ 1554.698352] [kworke][0xa73121782][18:02:53.606218] peach_v2: [11766:E:HDD] hdd_restart_tsf_sync_post_wlan_resume: Host TSF sync is not initialized!!
+[ 1554.698454] [kworke][0xa731221c0][18:02:53.606355] peach_v2: [11766:E:HDD] hdd_disable_ns_offload: Failed to disable NS Offload
+[ 1554.698537] [kworke][0xa731227f9][18:02:53.606438] peach_v2: [11766:E:HDD] hdd_restart_tsf_sync_post_wlan_resume: Host TSF sync is not initialized!!
+[ 1554.698951] [kworke][0xa7312470c][18:02:53.606852] peach_v2: [11355:W:TWT] wlan_twt_requestor_enable: twt requestor ini is not enabled
+[ 1554.698956] [kworke][0xa73124773][18:02:53.606857] peach_v2: [11355:W:OSIF] osif_twt_requestor_enable: Failed to send TWT requestor enable command
+[ 1554.698993] [PM_V] get modemsleeptime 0
+[ 1554.698998] [PM_V] get modemawaketime 0,current_sleep=0
+[ 1554.699002] [PM_V] get physlinktime 0
+[ 1554.699004] [PM_V] modem total sleep: 0 s,modem total awake 0 s
+[ 1554.699006] [PM_V] app total sleep: 37 s,app total awake: 112 s,lcd on total: 0 s
+[ 1554.699009] [PM_V] APP sleep for   1.078 s, modem wake      0 ms,(get_directly ),  0 %o
+[ 1554.699013] [PM_V] modem_sleep for   0 ---00
+[ 1554.699016] [PM_V] PhysLinkTotalTime    0 min    0, DetaPhyslink    0 min    0 in this time
+[ 1554.699019] PM notify app resume
+[ 1554.699021] [PM_V] zsw_pm_debug_resume new 1
+[ 1554.699054] [PM_V] zsw_pm_record_resume_stats error 
+[ 1554.699055] [PM_V] zsw_pm_resume_calculate_wakepercent zsw_getsmem_error
+[ 1554.700845] OOM killer enabled.
+[ 1554.700851] Restarting tasks ... done.
+[ 1554.733997] random: crng reseeded on system resumption
+[ 1554.734032] Abort: Pending Wakeup Sources: [timerfd] 
+[ 1554.734101] adsp_sleepmon: PM_POST_SUSPEND
+[ 1554.734128] PM: suspend exit
+[ 1554.734141] adsp_sleepmon: timer_event = 0,suspend_event = 1
+[ 1554.834833] PM: suspend entry (s2idle)
+[ 1554.843087] Filesystems sync: 0.008 seconds
+[ 1554.849749] [memory-driver] hwbp: installed pid=12706 addr=0000005c158423e0 type=4 len=4 passthrough=0 overrides=0
+[ 1554.849940] [memory-driver] hwbp: installed pid=12706 addr=0000005c15869268 type=1 len=4 passthrough=0 overrides=0
+[ 1554.849995] [memory-driver] hwbp: installed pid=12706 addr=0000005c15869268 type=2 len=1 passthrough=0 overrides=0
+[ 1554.850047] [memory-driver] hwbp: installed pid=12706 addr=0000005c15869268 type=3 len=4 passthrough=0 overrides=0
+[ 1554.850133] [memory-driver] hwbp: installed pid=12706 addr=0000005c158423e0 type=4 len=4 passthrough=0 overrides=0
+[ 1554.850276] [memory-driver] hwbp: installed pid=12706 addr=0000005c158423e0 type=4 len=4 passthrough=0 overrides=0
+[ 1554.850338] [memory-driver] hwbp: installed pid=12706 addr=0000005c158423e0 type=4 len=4 passthrough=0 overrides=0
+[ 1554.850372] [memory-driver] hwbp: installed pid=12706 addr=0000005c158423e0 type=4 len=4 passthrough=0 overrides=0
+[ 1554.850429] [memory-driver] hwbp: installed pid=12706 addr=0000005c1584249c type=4 len=4 passthrough=0 overrides=0
+[ 1554.850451] [memory-driver] hwbp: installed pid=12706 addr=0000005c1584249c type=4 len=4 passthrough=0 overrides=0
+[ 1554.850512] [memory-driver] hwbp: installed pid=12706 addr=0000005c158423e0 type=4 len=4 passthrough=0 overrides=0
+[ 1554.850708] [memory-driver] hwbp: installed pid=12706 addr=0000005c158424b4 type=4 len=4 passthrough=0 overrides=0
+[ 1554.850907] [memory-driver] hwbp: installed pid=12706 addr=0000005c158423e0 type=4 len=4 passthrough=0 overrides=0
+[ 1554.851453] [memory-driver] hwbp: installed pid=12706 addr=0000005c158423e0 type=4 len=4 passthrough=0 overrides=0
+[ 1554.852056] [memory-driver] hide_task: add name="test_hidden_marker_9f37" slot=0
+[ 1554.857262] Freezing user space processes
+[ 1554.883142] PM: PM: Pending Wakeup Sources: qcom_rx_wakelock 
+[ 1554.883148] Freezing user space processes aborted after 0.025 seconds
+[ 1554.883305] OOM killer enabled.
+[ 1554.883307] Restarting tasks ... done.
+[ 1554.911051] random: crng reseeded on system resumption
+[ 1554.911087] Abort: Pending Wakeup Sources: qcom_rx_wakelock 
+[ 1554.911185] adsp_sleepmon: PM_POST_SUSPEND
+[ 1554.911221] PM: suspend exit
+[ 1554.911239] adsp_sleepmon: timer_event = 0,suspend_event = 1
+[ 1554.911666] [memory-driver] hide_task: add pid=12708 slot=0
+[ 1554.950474] [memory-driver] hide_task: remove pid=12708
+[ 1554.951147] [memory-driver] reboot handshake hit: pid=12706
+[ 1554.951163] [memory-driver] fd installed: 4 for pid 12706
+[ 1554.951166] [memory-driver] [12706] install fd: 4
+[ 1554.951200] [memory-driver] hwbp: installed pid=12706 addr=0000005c1583fce0 type=4 len=4 passthrough=0 overrides=0
+[ 1554.951216] [memory-driver] hwbp: installed pid=12706 addr=0000005c1583fce8 type=4 len=4 passthrough=0 overrides=0
+[ 1554.951230] [memory-driver] hwbp: installed pid=12706 addr=0000005c1583fcf0 type=4 len=4 passthrough=0 overrides=0
+[ 1554.951243] [memory-driver] hwbp: installed pid=12706 addr=0000005c1583fcf8 type=4 len=4 passthrough=0 overrides=0
+[ 1554.951258] [memory-driver] hwbp: installed pid=12706 addr=0000005c1583fd00 type=4 len=4 passthrough=0 overrides=0
+[ 1554.951271] [memory-driver] hwbp: installed pid=12706 addr=0000005c1583fd08 type=4 len=4 passthrough=0 overrides=0
+[ 1555.004047] [memory-driver] hwbp: installed pid=12706 addr=0000005c1583fce0 type=4 len=4 passthrough=0 overrides=0
+[ 1555.004112] [memory-driver] hwbp: installed pid=12706 addr=0000005c1583fce8 type=4 len=4 passthrough=0 overrides=0
+[ 1555.004146] [memory-driver] hwbp: installed pid=12706 addr=0000005c1583fcf0 type=4 len=4 passthrough=0 overrides=0
+[ 1555.004178] [memory-driver] hwbp: installed pid=12706 addr=0000005c1583fcf8 type=4 len=4 passthrough=0 overrides=0
+[ 1555.004208] [memory-driver] hwbp: installed pid=12706 addr=0000005c1583fd00 type=4 len=4 passthrough=0 overrides=0
+[ 1555.004240] [memory-driver] hwbp: installed pid=12706 addr=0000005c1583fd08 type=4 len=4 passthrough=0 overrides=0
+[ 1555.004493] [memory-driver] reboot handshake hit: pid=12706
+[ 1555.004549] [memory-driver] fd installed: 4 for pid 12706
+[ 1555.004555] [memory-driver] [12706] install fd: 4
+[ 1555.004783] [memory-driver] hwbp: installed pid=12706 addr=0000005c158423e0 type=4 len=4 passthrough=0 overrides=0
+[ 1555.004809] [memory-driver] hwbp: installed pid=12706 addr=0000005c158423e0 type=4 len=4 passthrough=0 overrides=0
+[ 1555.004901] [memory-driver] hwbp: installed pid=12706 addr=0000005c158423e0 type=4 len=4 passthrough=0 overrides=0
+[ 1555.004952] [memory-driver] hwbp: installed pid=12706 addr=0000005c15869268 type=2 len=4 passthrough=0 overrides=0
+[ 1555.132389] KernelSU: Access filename failed, try rescue..
+[ 1555.137100] PM: suspend entry (s2idle)
+[ 1555.146626] Filesystems sync: 0.009 seconds
+[ 1555.163144] Freezing user space processes
+[ 1555.195003] Freezing user space processes completed (elapsed 0.031 seconds)
+[ 1555.195014] OOM killer disabled.
+[ 1555.195016] Freezing remaining freezable tasks
+[ 1555.200382] Freezing remaining freezable tasks completed (elapsed 0.005 seconds)
+[ 1555.200391] printk: Suspending console(s) (use no_console_suspend to debug)
+[ 1555.202415] [info ] syna_dev_suspend: syna_dev_suspend: pm_resume_flag:0
+[ 1555.202467] [kworke][0xa73a5cac1][18:02:54.110368] peach_v2: [11766:I:HDD] hdd_suspend_wlan: WLAN being suspended by OS
+[ 1555.203086] [binder][0xa73a5f933][18:02:54.110987] peach_v2: [11726:I:HDD] __wlan_hdd_bus_suspend: starting bus suspend
+[ 1555.203115] [binder][0xa73a5fb64][18:02:54.111017] peach_v2: [11726:I:PMO] pmo_core_enable_wow_in_fw: drv wow is enabled
+[ 1555.203121] [binder][0xa73a5fbcd][18:02:54.111022] peach_v2: [11726:I:PMO] pmo_core_enable_wow_in_fw: system suspend wow
+[ 1555.309007] [binder][0xa73c5013f][18:02:54.216908] peach_v2: [11726:I:HDD] __wlan_hdd_bus_suspend: bus suspend succeeded
+[ 1555.311784] [haptic_hv]<left>aw8693x_stop: enter
+[ 1555.311784] [haptic_hv]<right>aw8693x_stop: enter
+[ 1555.316410] [haptic_hv]<left>aw8693x_wait_enter_standby: entered standby!
+[ 1555.316847] [haptic_hv]<right>aw8693x_wait_enter_standby: entered standby!
+[ 1555.337641] q2spi_geni_suspend PID=11726
+[ 1555.346244] Enabled Clocks:
+[ 1555.346249] Enabled clocks:
+[ 1555.346310] No clocks enabled.
+[ 1555.346330] count: last 0 now 0, enter vdd min failed
+[ 1555.346361] [PM_V] get modemsleeptime 0
+[ 1555.346365] [PM_V] get modemawaketime 0,current_sleep=0
+[ 1555.346369] [PM_V] get physlinktime 0
+[ 1555.346371] [PM_V] APP wake for      0.648 s, lcd on for     0 s   0 %
+[ 1555.346375] [PM_V] modem wake for          0 ms(get_directly )    0 %o,modem sleep for          0 --00
+[ 1555.346379] [PM_V] modem_phys_link_total_time    0 min    0 s
+[ 1555.346381] [PM_V] deta_physlink_s    0 min    0 s during app wake
+[ 1555.346384] [PM_V] zsw_pm_debug_suspend new 1
+[ 1555.346407] [PM_V] zsw_pm_record_suspend_stats error 
+[ 1555.346472] suspend ns:    1555346472390      suspend cycles:      44892683068
+[ 1555.346492] resume cycles:      44912984675
+[ 1555.346584] [irq][0xa7505ca1f][18:02:55.311854] peach_v2: [0:F:HIF] hif_wake_interrupt_handler: wake interrupt received on irq 345
+[ 1555.346888] PM: PM: Pending Wakeup Sources: [timerfd] 
+[ 1555.369610] q2spi_geni_resume PID=11726
+[ 1555.372949] [binder][0xa750d8405][18:02:55.338225] peach_v2: [11726:I:HDD] wlan_hdd_bus_resume: starting bus resume
+[ 1555.373412] [binder][0xa750da596][18:02:55.338672] peach_v2: [11726:I:PMO] pmo_core_psoc_send_host_wakeup_ind_to_fw: Host wakeup indication sent to fw
+[ 1555.389984] [soft_i][0xa75128190][18:02:55.355259] peach_v2: [0:I:WMA] WLAN triggered wakeup: BPF_ALLOW (39), vdev: 0 (STA)
+[ 1555.390107] [soft_i][0xa75128adc][18:02:55.355383] peach_v2: [0:I:WMA] WLAN wake reason counters:
+[ 1555.390112] [soft_i][0xa75128b4d][18:02:55.355389] peach_v2: [0:I:WMA] uc:1777 bc:0 v4_mc:0 v6_mc:0 ra:0 ns:0 na:0 icmp:0 icmpv6:0
+[ 1555.390118] [soft_i][0xa75128bc3][18:02:55.355395] peach_v2: [0:I:WMA] assoc:0 disassoc:0 assoc_resp:0 reassoc:0 reassoc_resp:0 auth:0 deauth:0 action:1
+[ 1555.390124] [soft_i][0xa75128c35][18:02:55.355401] peach_v2: [0:I:WMA] pno_match:0 pno_complete:0 gscan:0 low_rssi:0 rssi_breach:0 oem:0 ucdrop:0 scan_11d:1 fatal_event:0
+[ 1555.390134] [soft_i][0xa75128cf8][18:02:55.355411] peach_v2: [0:I:WMA] wma_wake_event_packet: Wake event packet:
+[ 1555.390178] [soft_i][0xa75128f61][18:02:55.355443] peach_v2: [0:I:WMA] WOW Wakeup: IPV4 TCP Packet rcvd
+[ 1555.390184] [soft_i][0xa751290ba][18:02:55.355461] peach_v2: [0:I:WMA] src addr 192:168:50:212
+[ 1555.390190] [soft_i][0xa7512911e][18:02:55.355466] peach_v2: [0:I:WMA] dst addr 192:168:50:110
+[ 1555.390203] [soft_i][0xa75129214][18:02:55.355479] peach_v2: [0:I:WMA] WLAN wake reason counters:
+[ 1555.390208] [soft_i][0xa75129277][18:02:55.355484] peach_v2: [0:I:WMA] uc:1778 bc:0 v4_mc:0 v6_mc:0 ra:0 ns:0 na:0 icmp:0 icmpv6:0
+[ 1555.390213] [soft_i][0xa751292d9][18:02:55.355489] peach_v2: [0:I:WMA] assoc:0 disassoc:0 assoc_resp:0 reassoc:0 reassoc_resp:0 auth:0 deauth:0 action:1
+[ 1555.390218] [soft_i][0xa7512933d][18:02:55.355495] peach_v2: [0:I:WMA] pno_match:0 pno_complete:0 gscan:0 low_rssi:0 rssi_breach:0 oem:0 ucdrop:0 scan_11d:1 fatal_event:0
+[ 1555.390453] [binder][0xa7512a4e0][18:02:55.355730] peach_v2: [11726:I:HDD] wlan_hdd_bus_resume: bus resume succeeded
+[ 1555.390530] [info ] syna_dev_resume: syna_dev_resume: pm_resume_flag:1
+[ 1555.390718] [kworke][0xa7512b8ae][18:02:55.355994] peach_v2: [11762:I:HDD] hdd_resume_wlan: WLAN being resumed by OS
+[ 1555.390938] [kworke][0xa7512c943][18:02:55.356215] peach_v2: [11762:E:HDD] hdd_disable_ns_offload: Failed to disable NS Offload
+[ 1555.391044] [kworke][0xa7512d128][18:02:55.356320] peach_v2: [11762:E:HDD] hdd_restart_tsf_sync_post_wlan_resume: Host TSF sync is not initialized!!
+[ 1555.391169] [kworke][0xa7512da8c][18:02:55.356445] peach_v2: [11762:E:HDD] hdd_disable_ns_offload: Failed to disable NS Offload
+[ 1555.391249] [kworke][0xa7512e088][18:02:55.356525] peach_v2: [11762:E:HDD] hdd_restart_tsf_sync_post_wlan_resume: Host TSF sync is not initialized!!
+[ 1555.391627] [kworke][0xa7512fced][18:02:55.356904] peach_v2: [12579:W:TWT] wlan_twt_requestor_enable: twt requestor ini is not enabled
+[ 1555.391633] [kworke][0xa7512fd57][18:02:55.356909] peach_v2: [12579:W:OSIF] osif_twt_requestor_enable: Failed to send TWT requestor enable command
+[ 1555.391677] [PM_V] get modemsleeptime 0
+[ 1555.391685] [PM_V] get modemawaketime 0,current_sleep=0
+[ 1555.391694] [PM_V] get physlinktime 0
+[ 1555.391701] [PM_V] modem total sleep: 0 s,modem total awake 0 s
+[ 1555.391703] [PM_V] app total sleep: 38 s,app total awake: 112 s,lcd on total: 0 s
+[ 1555.391707] [PM_V] APP sleep for   1.101 s, modem wake      0 ms,(get_directly ),  0 %o
+[ 1555.391711] [PM_V] modem_sleep for   0 ---00
+[ 1555.391713] [PM_V] PhysLinkTotalTime    0 min    0, DetaPhyslink    0 min    0 in this time
+[ 1555.391717] PM notify app resume
+[ 1555.391719] [PM_V] zsw_pm_debug_resume new 1
+[ 1555.391756] [PM_V] zsw_pm_record_resume_stats error 
+[ 1555.391758] [PM_V] zsw_pm_resume_calculate_wakepercent zsw_getsmem_error
+[ 1555.393705] OOM killer enabled.
+[ 1555.393711] Restarting tasks ... done.
+[ 1555.428645] random: crng reseeded on system resumption
+[ 1555.428681] Abort: Pending Wakeup Sources: [timerfd] 
+[ 1555.428782] adsp_sleepmon: PM_POST_SUSPEND
+[ 1555.428807] PM: suspend exit
+[ 1555.428942] adsp_sleepmon: timer_event = 0,suspend_event = 1
+[ 1555.537885] KernelSU: newfstatat su->sh!
+[ 1555.537894] KernelSU: faccessat su->sh!
+[ 1555.538532] KernelSU: sys_execve su found
+[ 1555.547988] KernelSU: handle_setresuid from 0 to 0
+[ 1555.556985] AFTER
