@@ -36,5 +36,7 @@ object TestCatalog {
         TestSpec("S18", "Legacy GET_HITS refused", listOf("S18_hits_legacy")),
         TestSpec("S19", "Bait-guard flag deprecated", listOf("S19_bait_deprecated")),
         TestSpec("S20", "PTE_HOOK routing intact", listOf("S20_pte_routing")),
+        TestSpec("S21", "Caps ABI no overflow", listOf("S21_caps_size")),
+        TestSpec("S22", "Stale mm dropped on exec", listOf("S22_stale_mm")),
     )
 }

@@ -582,12 +582,17 @@ static void hwbp_notify_worker(struct work_struct *w) {
 	if (leader) {
 		rcu_read_lock();
 		for_each_thread(leader, t) {
-			bool blocked;
+			/* lock_task_sighand() atomically checks t->sighand under RCU
+			 * and takes siglock — a bare `t->sighand ? spin_lock(...) : ..`
+			 * races with release_task() clearing sighand under our feet
+			 * once a thread starts exiting. Skip exiting/reaped threads. */
 			unsigned long flags;
-			if (!t->sighand) continue;
-			spin_lock_irqsave(&t->sighand->siglock, flags);
+			bool blocked;
+			struct sighand_struct *sh = lock_task_sighand(t, &flags);
+			if (!sh)
+				continue;
 			blocked = sigismember(&t->blocked, nw->signal_no);
-			spin_unlock_irqrestore(&t->sighand->siglock, flags);
+			unlock_task_sighand(t, &flags);
 			if (!blocked) { chosen = t; break; }
 		}
 		if (!chosen)
@@ -837,6 +842,16 @@ static long hwbp_install(void __user *arg, struct file *owner) {
 	/* Only match against trackers this fd already owns; another client's
 	 * tracker on the same (pid, addr) is left alone and we build our own. */
 	existing = hwbp_lookup_locked(pid_ref, req.addr, owner);
+	if (existing && existing->mm != mm) {
+		/* The target exec'd between installs — the old tracker's mm belongs
+		 * to a process that no longer exists, its perf_event is anchored to
+		 * a dead task, and the arm64 hw-bp core would eventually orphan it
+		 * on the next hit. Drop it now so the new install can build a
+		 * tracker against the current mm instead of updating the stale one. */
+		list_del(&existing->node);
+		hwbp_unregister_and_free(existing);
+		existing = NULL;
+	}
 	if (existing && existing->mm == mm) {
 		if (existing->bp_type != req.bp_type || existing->bp_len != req.bp_len ||
 		    existing->pass_through != req.pass_through) {
@@ -1106,12 +1121,18 @@ static long hwbp_get_caps(void __user *arg) {
 	caps.max_overrides = DRV_HWBP_MAX_OVERRIDES;
 	caps.hit_bytes = sizeof(struct drv_hwbp_hit);
 	caps.install_req_bytes = sizeof(struct drv_hwbp_install_req);
-	/* BAIT_GUARD intentionally omitted — the redirect action was removed in R5;
-	 * callers now use DRV_CMD_HWBP_TRANSLATE_BAIT explicitly. */
-	caps.flags_supported = DRV_HWBP_FLAG_NOTIFY | DRV_HWBP_FLAG_CAPTURE_FP |
-			       DRV_HWBP_FLAG_TIMING_BYPASS;
+	/* BAIT_GUARD intentionally omitted — the redirect action was removed in R5.
+	 * Pack the ABI generation into the top 8 bits of flags_supported so this
+	 * struct stays 32 bytes (a bigger struct would overflow an old client's
+	 * caller-side stack buffer under the same ioctl number — review). */
+	{
+		u32 flags = DRV_HWBP_FLAG_NOTIFY | DRV_HWBP_FLAG_CAPTURE_FP |
+		            DRV_HWBP_FLAG_TIMING_BYPASS;
+		caps.flags_supported = (flags & DRV_HWBP_CAPS_FLAGS_MASK) |
+		                       ((DRV_HWBP_ABI_GENERATION & DRV_HWBP_ABI_GEN_MASK)
+		                        << DRV_HWBP_ABI_GEN_SHIFT);
+	}
 	caps.fp_ready = hwbp_fp_ready ? 1u : 0u;
-	caps.abi_generation = DRV_HWBP_ABI_GENERATION;
 	if (copy_to_user(arg, &caps, sizeof(caps)) != 0)
 		return -EFAULT;
 	return 0;
@@ -1385,7 +1406,7 @@ int hwbp_init(void) {
 	BUILD_BUG_ON(sizeof(struct drv_hwbp_reg_override) != 16);
 	BUILD_BUG_ON(sizeof(struct drv_hwbp_install_req) != 192);
 	BUILD_BUG_ON(sizeof(struct drv_hwbp_hit) != 800);
-	BUILD_BUG_ON(sizeof(struct drv_hwbp_caps) != 40);
+	BUILD_BUG_ON(sizeof(struct drv_hwbp_caps) != 32);
 	BUILD_BUG_ON(sizeof(struct drv_hwbp_sample_req) != 24);
 	BUILD_BUG_ON(sizeof(struct drv_hwbp_condition_req) != 32);
 	BUILD_BUG_ON(sizeof(struct drv_hwbp_bypass_req) != 24);

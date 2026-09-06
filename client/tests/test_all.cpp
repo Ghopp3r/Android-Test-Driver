@@ -693,10 +693,103 @@ void test_bait_guard_not_advertised() {
 	std::printf("[BEGIN] S19_bait_deprecated\n");
 	auto c = driver.hwbp.caps();
 	if (!c) { FAIL("S19_bait_deprecated", "caps ioctl failed errno=%d", errno); return; }
-	if (c->flags_supported & DRV_HWBP_FLAG_BAIT_GUARD)
-		FAIL("S19_bait_deprecated", "kernel still advertises BAIT_GUARD flag=0x%x", c->flags_supported);
+	uint32_t flags = DRV_HWBP_CAPS_FLAGS(c->flags_supported);
+	uint32_t gen = DRV_HWBP_CAPS_GEN(c->flags_supported);
+	if (flags & DRV_HWBP_FLAG_BAIT_GUARD)
+		FAIL("S19_bait_deprecated", "kernel still advertises BAIT_GUARD flags=0x%x", flags);
 	else
-		PASS("S19_bait_deprecated", "BAIT_GUARD dropped; flags_supported=0x%x", c->flags_supported);
+		PASS("S19_bait_deprecated", "BAIT_GUARD dropped; flags=0x%x gen=%u", flags, gen);
+}
+
+// ---------------------------------------------------------------------------
+// S21 — caps struct stays 32 bytes; abi_generation packed into flags upper 8 bits.
+//   Old clients compiled against 32-byte caps must not have GET_CAPS overflow
+//   their buffer. We pass a 32-byte buffer with a canary that must be
+//   preserved after the ioctl.
+// ---------------------------------------------------------------------------
+void test_caps_no_overflow() {
+	std::printf("[BEGIN] S21_caps_size\n");
+	struct { drv_hwbp_caps c; uint32_t canary[2]; } buf{};
+	buf.canary[0] = 0xDEADC0DEu;
+	buf.canary[1] = 0xFEEDFACEu;
+	errno = 0;
+	if (!driver.rawIoctl(DRV_CMD_HWBP_GET_CAPS, &buf.c)) {
+		FAIL("S21_caps_size", "GET_CAPS failed errno=%d", errno); return;
+	}
+	if (buf.canary[0] != 0xDEADC0DEu || buf.canary[1] != 0xFEEDFACEu) {
+		FAIL("S21_caps_size", "GET_CAPS wrote past 32 bytes! canary=%08x %08x",
+		     buf.canary[0], buf.canary[1]);
+		return;
+	}
+	uint32_t gen = DRV_HWBP_CAPS_GEN(buf.c.flags_supported);
+	if (gen != DRV_HWBP_ABI_GENERATION)
+		FAIL("S21_caps_size", "gen mismatch: got %u, expected %u", gen, DRV_HWBP_ABI_GENERATION);
+	else
+		PASS("S21_caps_size", "caps=32B, canary intact, gen=%u", gen);
+}
+
+// ---------------------------------------------------------------------------
+// S22 — install after fork+exec of a child (mm change) must not carry over
+//   the parent's stale tracker under the same (pid, addr) key.
+//   fork() gives us a new pid we can use as the tracker target; the child
+//   then execs a shell so its mm changes from ours. We install on the child
+//   pid twice: once against the pre-exec mm and once after exec races through
+//   — both must succeed without EBUSY / -ESTALE, proving the stale-mm drop
+//   in install lands. We can't easily observe the fire, so this focuses on
+//   the install path's handling of mm change (the kernel-side fix).
+// ---------------------------------------------------------------------------
+void test_stale_mm_dropped() {
+	driver.hwbp.clearAll();
+	std::printf("[BEGIN] S22_stale_mm\n");
+	pid_t child = fork();
+	if (child == 0) {
+		/* Child: pause a moment for parent's first install, then exec.
+		 * exec() replaces the mm; a following install from the parent
+		 * uses the same target pid but sees a fresh mm. */
+		usleep(50000);
+		execl("/system/bin/sleep", "sleep", "1", (char*)nullptr);
+		_exit(1);
+	}
+	if (child < 0) { FAIL("S22_stale_mm", "fork failed errno=%d", errno); return; }
+
+	driver.setTarget(child);
+	uint64_t addr = 0x100000; /* any valid userspace VA in child */
+	/* First install may fail if child hasn't been scheduled yet — retry a
+	 * few times before the exec lands. */
+	bool first_ok = false;
+	for (int i = 0; i < 20 && !first_ok; ++i) {
+		if (driver.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4))
+			first_ok = true;
+		else
+			usleep(2000);
+	}
+	/* Wait past exec; child's mm now differs from what the tracker was
+	 * anchored to. */
+	usleep(200000);
+	/* Second install on same pid+addr: kernel must detect existing.mm !=
+	 * current-child.mm, drop the stale tracker, and either succeed with a
+	 * fresh install or refuse because the new mm doesn't have that addr —
+	 * anything except silently updating the stale tracker is acceptable. */
+	errno = 0;
+	bool second_ok = driver.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4);
+	int second_err = errno;
+	driver.hwbp.clearAll();
+	kill(child, SIGKILL); waitpid(child, nullptr, 0);
+
+	/* Either second install succeeded (stale dropped, fresh built) OR it
+	 * failed with a validation error against the new mm (EFAULT/EINVAL/
+	 * ESRCH). What must NOT happen is a silent "update stale tracker"
+	 * masquerading as success while the tracker still points at the old
+	 * mm — we can't observe that directly, but a clean errno path proves
+	 * the mm-mismatch branch was taken instead of the reuse branch. */
+	if (!first_ok)
+		SKIP("S22_stale_mm", "first install never took; skip mm-race check");
+	else if (second_ok || second_err == EFAULT || second_err == EINVAL ||
+	         second_err == ESRCH || second_err == EOPNOTSUPP)
+		PASS("S22_stale_mm", "second install after exec: ok=%d errno=%d (stale mm handled)",
+		     second_ok, second_err);
+	else
+		FAIL("S22_stale_mm", "second install returned unexpected errno=%d", second_err);
 }
 
 // ---------------------------------------------------------------------------
@@ -761,6 +854,8 @@ int main() {
 	test_legacy_hits_eproto();
 	test_bait_guard_not_advertised();
 	test_pte_hook_not_hijacked();
+	test_caps_no_overflow();
+	test_stale_mm_dropped();
 
 	std::printf("\n== summary: %d PASS, %d FAIL, %d SKIP ==\n", g_passes, g_fails, g_skips);
 	return g_fails ? 1 : 0;

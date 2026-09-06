@@ -178,7 +178,7 @@ extern Driver driver;
 static_assert(sizeof(drv_hwbp_reg_override) == 16);
 static_assert(sizeof(drv_hwbp_install_req) == 192);
 static_assert(sizeof(drv_hwbp_hit) == 800);
-static_assert(sizeof(drv_hwbp_caps) == 40);
+static_assert(sizeof(drv_hwbp_caps) == 32);
 static_assert(sizeof(drv_hwbp_sample_req) == 24);
 static_assert(sizeof(drv_hwbp_condition_req) == 32);
 static_assert(sizeof(drv_hwbp_bypass_req) == 24);

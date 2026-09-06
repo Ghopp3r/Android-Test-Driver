@@ -39,7 +39,7 @@ bool Driver::open() {
         errno = err;
         return false;
     }
-    if (c.abi_generation != DRV_HWBP_ABI_GENERATION ||
+    if (DRV_HWBP_CAPS_GEN(c.flags_supported) != DRV_HWBP_ABI_GENERATION ||
         c.hit_bytes != sizeof(drv_hwbp_hit) ||
         c.install_req_bytes != sizeof(drv_hwbp_install_req)) {
         ::close(m_fd);

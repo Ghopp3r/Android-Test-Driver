@@ -237,11 +237,20 @@ struct drv_hwbp_hit {
 	__u32 fpcr;
 };
 
-/* ABI generation bumped whenever wire format or command numbers change in a
- * way sizeof-checks alone can't catch. Client refuses open() unless its
- * compiled generation matches the kernel's. gen 2 = 800-byte hit records +
- * GET_HITS relocated to 0x63 (out of the PTE collision). */
-#define DRV_HWBP_ABI_GENERATION 2u
+/* ABI generation bumped when wire format or command numbers change in a way
+ * sizeof-checks alone can't catch. Kept in the upper 8 bits of
+ * flags_supported so the caps struct itself stays 32 bytes — enlarging the
+ * struct under the same ioctl number would overflow an old client's stack
+ * buffer. gen 2 = 800-byte hit records + GET_HITS at 0x63. */
+#define DRV_HWBP_ABI_GENERATION      2u
+#define DRV_HWBP_ABI_GEN_SHIFT       24u
+#define DRV_HWBP_ABI_GEN_MASK        0xFFu
+#define DRV_HWBP_CAPS_FLAGS_MASK     0x00FFFFFFu
+
+#define DRV_HWBP_CAPS_GEN(v)   \
+	(((v) >> DRV_HWBP_ABI_GEN_SHIFT) & DRV_HWBP_ABI_GEN_MASK)
+#define DRV_HWBP_CAPS_FLAGS(v) \
+	((v) & DRV_HWBP_CAPS_FLAGS_MASK)
 
 struct drv_hwbp_caps {
 	__u32 num_brps;         /* execute slots reported by ID_AA64DFR0_EL1.BRPs */
@@ -250,10 +259,10 @@ struct drv_hwbp_caps {
 	__u32 max_overrides;    /* DRV_HWBP_MAX_OVERRIDES */
 	__u32 hit_bytes;        /* sizeof(struct drv_hwbp_hit) */
 	__u32 install_req_bytes;/* sizeof(struct drv_hwbp_install_req) */
-	__u32 flags_supported;  /* DRV_HWBP_FLAG_* mask this build understands */
+	/* Low 24 bits: DRV_HWBP_FLAG_* mask this build understands.
+	 * High  8 bits: DRV_HWBP_ABI_GENERATION.  Use the helpers above. */
+	__u32 flags_supported;
 	__u32 fp_ready;         /* 1 if FPSIMD helpers were resolved at init */
-	__u32 abi_generation;   /* == DRV_HWBP_ABI_GENERATION of the running module */
-	__u32 _reserved;
 };
 
 struct drv_hwbp_sample_req {
