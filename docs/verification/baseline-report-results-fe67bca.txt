@@ -1,0 +1,3 @@
+matrix_with_failed_subtest=PASS|accepted
+surface_with_two_failed_subtests=PASS|absent
+REPRODUCED: both APK rows report PASS despite subgroup failures

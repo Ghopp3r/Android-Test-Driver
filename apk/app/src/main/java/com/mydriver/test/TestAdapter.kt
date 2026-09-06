@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 package com.mydriver.test
 
 import android.graphics.Color
@@ -9,11 +10,11 @@ import android.widget.TextView
 import androidx.recyclerview.widget.RecyclerView
 
 enum class TestState(val label: String, val bg: Int) {
-    PENDING("—",    Color.parseColor("#9E9E9E")),
-    RUNNING("...",  Color.parseColor("#1976D2")),
-    PASS("PASS",    Color.parseColor("#2E7D32")),
-    FAIL("FAIL",    Color.parseColor("#C62828")),
-    SKIP("SKIP",    Color.parseColor("#616161")),
+    PENDING("—", Color.parseColor("#9E9E9E")),
+    RUNNING("...", Color.parseColor("#1976D2")),
+    PASS("PASS", Color.parseColor("#2E7D32")),
+    FAIL("FAIL", Color.parseColor("#C62828")),
+    SKIP("SKIP", Color.parseColor("#616161")),
 }
 
 data class TestRow(
@@ -44,9 +45,14 @@ class TestAdapter(
         val row = rows[position]
         h.tag.text = row.state.label
         h.tag.setBackgroundColor(row.state.bg)
-        h.name.text = "${row.spec.id}  ${row.spec.title}"
+        h.name.text = "${row.spec.id}: ${row.spec.title}"
         h.detail.text = row.detail
-        h.btn.setOnClickListener { onRun(position) }
+        h.btn.isEnabled = rows.none { it.state == TestState.RUNNING }
+        h.btn.setText(R.string.run_all)
+        h.btn.setOnClickListener {
+            val index = h.bindingAdapterPosition
+            if (index != RecyclerView.NO_POSITION) onRun(index)
+        }
     }
 
     override fun getItemCount() = rows.size
