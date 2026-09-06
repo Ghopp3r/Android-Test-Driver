@@ -79,13 +79,19 @@ enum drv_cmd {
 	DRV_CMD_HWBP_INSTALL = 0x40,
 	DRV_CMD_HWBP_REMOVE = 0x41,
 	DRV_CMD_HWBP_SET_OVERRIDE = 0x42,
-	DRV_CMD_HWBP_GET_HITS = 0x43,
+	/* 0x43 was DRV_CMD_HWBP_GET_HITS with the 280-byte drv_hwbp_hit layout;
+	 * the new hit record is 800 bytes (adds FPSIMD state). Kernels built
+	 * against this UAPI reject 0x43 with -EPROTO so a stale client that
+	 * carried the old struct sizeof gets an authoritative error instead of
+	 * silently misreading the payload (review R4). */
+	DRV_CMD_HWBP_GET_HITS_LEGACY = 0x43,
 	DRV_CMD_HWBP_CLEAR_ALL = 0x44,
 	DRV_CMD_HWBP_GET_CAPS = 0x45,
 	DRV_CMD_HWBP_SET_SAMPLE = 0x46,
 	DRV_CMD_HWBP_SET_CONDITION = 0x47,
+	DRV_CMD_HWBP_GET_HITS = 0x48,          /* 800-byte hit records */
 	DRV_CMD_HWBP_RANGE_FIRST = DRV_CMD_HWBP_INSTALL,
-	DRV_CMD_HWBP_RANGE_LAST = DRV_CMD_HWBP_SET_CONDITION,
+	DRV_CMD_HWBP_RANGE_LAST = DRV_CMD_HWBP_GET_HITS,
 
 	/* Extended HWBP commands placed after PTE + hide ranges to keep the
 	 * primary HWBP range contiguous. */
@@ -172,7 +178,12 @@ struct drv_input_event {
 
 /* Per-tracker install flags. `flags` field is reused from the historical `_pad`
  * slot of drv_hwbp_install_req — zero means legacy behaviour. */
-#define DRV_HWBP_FLAG_BAIT_GUARD (1u << 0)   /* redirect addr via translate_bait */
+/* DEPRECATED — used to make install redirect req.addr via translate_bait, which
+ * stranded the client under a key it couldn't reach. Callers now invoke
+ * DRV_CMD_HWBP_TRANSLATE_BAIT explicitly and install with the resolved
+ * address. The bit is still accepted for source compatibility but has no
+ * effect and is no longer reported in caps.flags_supported (review R5). */
+#define DRV_HWBP_FLAG_BAIT_GUARD (1u << 0)
 #define DRV_HWBP_FLAG_NOTIFY (1u << 1)       /* deliver signal_no (default 43) to notify_pid on hit */
 #define DRV_HWBP_FLAG_CAPTURE_FP (1u << 2)   /* capture FPSIMD state (Q0..Q31) in hit ring */
 #define DRV_HWBP_FLAG_TIMING_BYPASS (1u << 3) /* skip ring push & signal to eliminate observable latency */

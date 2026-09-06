@@ -32,5 +32,8 @@ object TestCatalog {
         TestSpec("S14", "File descriptor ownership", listOf("S14_fd_scoped")),
         TestSpec("S15", "Fd owner isolation", listOf("S15_fd_owner")),
         TestSpec("S16", "Bait-guard tracker key", listOf("S16_bait_key")),
+        TestSpec("S17", "Watchpoint one-shot fire", listOf("S17_wp_oneshot")),
+        TestSpec("S18", "Legacy GET_HITS refused", listOf("S18_hits_legacy")),
+        TestSpec("S19", "Bait-guard flag deprecated", listOf("S19_bait_deprecated")),
     )
 }

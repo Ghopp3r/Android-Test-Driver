@@ -493,32 +493,55 @@ void test_pid_hide() {
 }
 
 // ---------------------------------------------------------------------------
-// S14 — fd-scoped cleanup (installs on a secondary fd, closes, verifies gone)
+// S14 — fd-scoped cleanup (rewritten for review R7).
+//   Old check ("remove from primary returns error") was undecidable — an
+//   owner mismatch and a missing tracker both yield ENOENT, so the assertion
+//   couldn't distinguish "cleanup happened" from "cleanup silently didn't".
+//   New form: open a second fd, install, remove-via-alt-succeeds proves the
+//   tracker exists under alt's ownership; then close alt, open a THIRD fd,
+//   and confirm the same install succeeds — a stranded tracker on a dead fd
+//   would collide on (pid, addr) with the new install and force EBUSY.
 // ---------------------------------------------------------------------------
 void test_fd_scoped_cleanup() {
+	driver.hwbp.clearAll();
 	std::printf("[BEGIN] S14_fd_scoped\n");
-	// Open a second Driver handle → open() gets a fresh fd via reboot handshake.
-	Driver alt;
-	if (!alt.open()) { SKIP("S14_fd_scoped", "cannot open second fd errno=%d", errno); return; }
-	alt.setTarget(getpid());
 	uint64_t addr = reinterpret_cast<uint64_t>(&probe_fn);
-	if (!alt.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4)) {
-		FAIL("S14_fd_scoped", "install on alt fd failed"); return;
+	{
+		Driver alt;
+		if (!alt.open()) { SKIP("S14_fd_scoped", "cannot open alt fd errno=%d", errno); return; }
+		alt.setTarget(getpid());
+		if (!alt.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4)) {
+			FAIL("S14_fd_scoped", "alt install failed errno=%d", errno); return;
+		}
+		if (!alt.hwbp.remove(addr)) {
+			FAIL("S14_fd_scoped", "alt remove failed — owner mismatch on same fd?"); return;
+		}
+		if (!alt.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4)) {
+			FAIL("S14_fd_scoped", "alt re-install failed"); return;
+		}
+		alt.close();
+		usleep(20000);
 	}
-	// Close the alt fd — kernel .release should sweep the tracker.
-	alt.close();
-	usleep(20000);
-	// Now try to remove that tracker via the primary fd — should be gone.
-	drv_ioctl_req req{}; req.pid = getpid(); req.addr = addr;
-	bool still_there = driver.rawIoctl(DRV_CMD_HWBP_REMOVE, &req);
-	if (!still_there) PASS("S14_fd_scoped", "tracker gone after alt fd close");
-	else FAIL("S14_fd_scoped", "tracker still present — cleanup missed");
+	/* If release() failed to reap the tracker, this install would collide on
+	 * (pid, addr) with a "stuck" tracker owned by a dead fd — and no other
+	 * fd could ever remove it. A fresh install on a third fd succeeding is
+	 * the observable proof that cleanup happened. */
+	Driver alt2;
+	if (!alt2.open()) { SKIP("S14_fd_scoped", "third open failed errno=%d", errno); return; }
+	alt2.setTarget(getpid());
+	if (!alt2.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_X, DRV_HWBP_LEN_4)) {
+		FAIL("S14_fd_scoped", "third fd install failed — stale tracker not reaped");
+	} else {
+		alt2.hwbp.remove(addr);
+		PASS("S14_fd_scoped", "release() reaped alt's tracker; third fd installs cleanly");
+	}
 }
 
 // ---------------------------------------------------------------------------
-// S15 — fd owner isolation (regression for review finding #7).
-//   Two clients on the same (pid, addr) must get two independent trackers;
-//   remove/clearAll on one must not touch the other.
+// S15 — fd owner isolation (regression for review finding #7 + R7 sharpening).
+//   Two clients on the same (pid, addr): a) both installs succeed, b) alt's
+//   clearAll returns success and empties ONLY its own trackers, c) primary's
+//   tracker survives and remove() from primary still works.
 // ---------------------------------------------------------------------------
 void test_fd_owner_isolation() {
 	driver.hwbp.clearAll();
@@ -537,20 +560,25 @@ void test_fd_owner_isolation() {
 		driver.hwbp.remove(addr); return;
 	}
 
-	// clearAll on secondary must leave primary's tracker intact.
-	alt.hwbp.clearAll();
-	drv_ioctl_req probe_req{}; probe_req.pid = getpid(); probe_req.addr = addr;
-	bool primary_alive = driver.rawIoctl(DRV_CMD_HWBP_REMOVE, &probe_req);
-	if (!primary_alive) {
-		FAIL("S15_fd_owner", "secondary's clearAll wiped the primary tracker"); return;
+	/* clearAll must succeed for the calling fd. */
+	if (!alt.hwbp.clearAll()) {
+		FAIL("S15_fd_owner", "alt.clearAll() returned false"); driver.hwbp.remove(addr); return;
 	}
-	PASS("S15_fd_owner", "two clients isolated; secondary clearAll left primary intact");
+	/* And drop alt's own tracker — the follow-up remove() on alt should
+	 * report ENOENT (return false), otherwise clearAll didn't actually
+	 * do what its name says. */
+	if (alt.hwbp.remove(addr)) {
+		FAIL("S15_fd_owner", "alt.remove() succeeded after clearAll — clearAll didn't clear"); return;
+	}
+	/* Primary's tracker must survive that. Its remove() should still succeed. */
+	if (!driver.hwbp.remove(addr)) {
+		FAIL("S15_fd_owner", "primary tracker vanished after alt's clearAll"); return;
+	}
+	PASS("S15_fd_owner", "alt.clearAll dropped only alt; primary intact and removable");
 }
 
 // ---------------------------------------------------------------------------
-// S16 — BAIT_GUARD no longer mutates the tracker key (regression for #11/#12).
-//   Install with BAIT_GUARD; the returned addr is exactly what we passed and
-//   remove(addr) on the same value succeeds.
+// S16 — BAIT_GUARD flag is now silently ignored; tracker key equals input.
 // ---------------------------------------------------------------------------
 void test_bait_guard_key_stable() {
 	driver.hwbp.clearAll();
@@ -564,7 +592,86 @@ void test_bait_guard_key_stable() {
 	if (!driver.hwbp.remove(addr))
 		FAIL("S16_bait_key", "remove(addr) failed — kernel rewrote the tracker key");
 	else
-		PASS("S16_bait_key", "tracker key equals installed addr");
+		PASS("S16_bait_key", "BAIT_GUARD accepted, tracker key unchanged");
+}
+
+// ---------------------------------------------------------------------------
+// S17 — watchpoint actually fires + auto-disables (regression for R1).
+//   Install a W watchpoint on g_probe_word, trigger the store, poll getHits
+//   until a hit lands, then confirm the tracker is one-shot: a follow-up
+//   store to the same word does NOT record a second hit until re-install.
+//   This is the first assertion that a non-execute callback actually ran.
+// ---------------------------------------------------------------------------
+__attribute__((noinline)) void poke_probe_word(uint32_t v) {
+	g_probe_word = v;
+}
+void test_watchpoint_oneshot() {
+	driver.hwbp.clearAll();
+	std::printf("[BEGIN] S17_wp_oneshot\n");
+	driver.setTarget(getpid());
+	uint64_t addr = reinterpret_cast<uint64_t>(&g_probe_word);
+	if (!driver.hwbp.install(addr, {}, false, DRV_HWBP_TYPE_W, DRV_HWBP_LEN_4)) {
+		FAIL("S17_wp_oneshot", "install(W) failed errno=%d", errno); return;
+	}
+	poke_probe_word(0xC0DEAAAAu);
+
+	/* Poll for the first hit — async disable via workqueue means the hit
+	 * may land before the disable does. 200 ms cap. */
+	size_t first_hits = 0;
+	for (int i = 0; i < 40 && !first_hits; ++i) {
+		first_hits = driver.hwbp.getHits(addr).size();
+		if (first_hits) break;
+		usleep(5000);
+	}
+	if (!first_hits) {
+		FAIL("S17_wp_oneshot", "watchpoint never fired");
+		driver.hwbp.remove(addr); return;
+	}
+	/* Give the deferred disable ~50 ms to run, then poke again — a still-armed
+	 * watchpoint would record another handful of hits. */
+	usleep(50000);
+	poke_probe_word(0xC0DEBBBBu);
+	usleep(20000);
+	size_t second_hits = driver.hwbp.getHits(addr).size();
+	driver.hwbp.remove(addr);
+	if (second_hits == 0)
+		PASS("S17_wp_oneshot", "watchpoint fired (%zu hits) and auto-disabled", first_hits);
+	else
+		FAIL("S17_wp_oneshot", "watchpoint kept firing after auto-disable (%zu extra)", second_hits);
+}
+
+// ---------------------------------------------------------------------------
+// S18 — legacy GET_HITS ioctl (0x43) now returns EPROTO (regression for R4).
+//   An older client compiled against the 280-byte hit layout would hit this
+//   command number; the new kernel refuses it with a stable errno so the
+//   caller sees the ABI break instead of silently misreading payloads.
+// ---------------------------------------------------------------------------
+void test_legacy_hits_epROTO() {
+	std::printf("[BEGIN] S18_hits_legacy\n");
+	drv_ioctl_req req{};
+	req.pid = getpid();
+	req.addr = reinterpret_cast<uint64_t>(&probe_fn);
+	req.buf  = reinterpret_cast<uint64_t>(&req);   /* any non-null buffer */
+	req.size = 4096;
+	errno = 0;
+	bool ok = driver.rawIoctl(DRV_CMD_HWBP_GET_HITS_LEGACY, &req);
+	if (!ok && errno == EPROTO)
+		PASS("S18_hits_legacy", "legacy 0x43 returned EPROTO as designed");
+	else
+		FAIL("S18_hits_legacy", "expected EPROTO, got ok=%d errno=%d", ok, errno);
+}
+
+// ---------------------------------------------------------------------------
+// S19 — caps.flags_supported no longer advertises deprecated BAIT_GUARD (R5).
+// ---------------------------------------------------------------------------
+void test_bait_guard_not_advertised() {
+	std::printf("[BEGIN] S19_bait_deprecated\n");
+	auto c = driver.hwbp.caps();
+	if (!c) { FAIL("S19_bait_deprecated", "caps ioctl failed errno=%d", errno); return; }
+	if (c->flags_supported & DRV_HWBP_FLAG_BAIT_GUARD)
+		FAIL("S19_bait_deprecated", "kernel still advertises BAIT_GUARD flag=0x%x", c->flags_supported);
+	else
+		PASS("S19_bait_deprecated", "BAIT_GUARD dropped; flags_supported=0x%x", c->flags_supported);
 }
 
 } // anon
@@ -594,6 +701,9 @@ int main() {
 	test_fd_scoped_cleanup();
 	test_fd_owner_isolation();
 	test_bait_guard_key_stable();
+	test_watchpoint_oneshot();
+	test_legacy_hits_epROTO();
+	test_bait_guard_not_advertised();
 
 	std::printf("\n== summary: %d PASS, %d FAIL, %d SKIP ==\n", g_passes, g_fails, g_skips);
 	return g_fails ? 1 : 0;

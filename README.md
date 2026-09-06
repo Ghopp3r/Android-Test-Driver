@@ -80,8 +80,8 @@ Feature flags (bitmask in `install(...flags)`):
 
 | Flag | Bit | Effect |
 | --- | ---: | --- |
-| `DRV_HWBP_FLAG_BAIT_GUARD` | 0x1 | Redirect `addr` into the largest same-basename VMA cluster — defeats AC bait mmaps that share a filename with the real module. |
-| `DRV_HWBP_FLAG_NOTIFY` | 0x2 | Deliver `SIGRTMIN+1` (or a caller-chosen realtime signal) to `notify_pid` on hit; `si_int` carries the tracker id. |
+| `DRV_HWBP_FLAG_BAIT_GUARD` | 0x1 | **Deprecated.** Historically redirected `addr` via `translate_bait`, but the silent rewrite hid the real tracker key from the caller. Now accepted for source-compat and silently dropped; call `DRV_CMD_HWBP_TRANSLATE_BAIT` explicitly and pass the resolved address to `install`. |
+| `DRV_HWBP_FLAG_NOTIFY` | 0x2 | Deliver `signal_no` (default 43 — safely past Bionic's 32..34/40/41 reservations) to `notify_pid` on hit; `si_int` carries the tracker id. Delivered to the group-leader task only (one hit → one signal). |
 | `DRV_HWBP_FLAG_CAPTURE_FP` | 0x4 | Fill `q_lo/q_hi/fpsr/fpcr` in every hit record from `current->thread.uw.fpsimd_state`. |
 | `DRV_HWBP_FLAG_TIMING_BYPASS` | 0x8 | Skip ring push + signal delivery on hit — overrides still applied. Reduces observable per-hit overhead to the perf overflow path. |
 
@@ -90,10 +90,10 @@ Per-tracker gates (each set via its own ioctl after install):
 - `SET_SAMPLE(every=N)` — only every Nth hit fires; useful for high-frequency call sites.
 - `SET_CONDITION({reg, op, value})` — hit is filtered unless `regs->X[reg] op value` matches (`op ∈ {EQ, NE, LT, LE, GT, GE}`).
 - `SET_BYPASS_PID(pid)` — one-shot: the next hit whose `current->pid == pid` is silently consumed. Prevents self-recursion when the client itself calls the traced function.
-- `SET_NOTIFY({notify_pid, signal_no})` — mutable signal target; `signal_no=0` picks `SIGRTMIN+1`.
+- `SET_NOTIFY({notify_pid, signal_no})` — mutable signal target; `signal_no=0` picks the kernel default (43).
 - `TRANSLATE_BAIT(addr)` — returns the LARGEST same-basename VMA cluster address for `addr` without installing anything; useful for probing an AC mapping layout ahead of `install`.
 
-HWBP command range: primary `0x40..0x47` (INSTALL, REMOVE, SET_OVERRIDE, GET_HITS, CLEAR_ALL, GET_CAPS, SET_SAMPLE, SET_CONDITION); extended `0x60..0x62` (SET_BYPASS_PID, SET_NOTIFY, TRANSLATE_BAIT). `GET_CAPS` returns `{num_brps, num_wrps, ring_slots, max_overrides, hit_bytes, install_req_bytes, flags_supported, fp_ready}` from `ID_AA64DFR0_EL1` — use it to feature-detect before install.
+HWBP command range: primary `0x40..0x48` (INSTALL, REMOVE, SET_OVERRIDE, GET_HITS_LEGACY [refused with `EPROTO`], CLEAR_ALL, GET_CAPS, SET_SAMPLE, SET_CONDITION, GET_HITS 800-byte); extended `0x60..0x62` (SET_BYPASS_PID, SET_NOTIFY, TRANSLATE_BAIT). `GET_CAPS` returns `{num_brps, num_wrps, ring_slots, max_overrides, hit_bytes, install_req_bytes, flags_supported, fp_ready}` from `ID_AA64DFR0_EL1` — use it to feature-detect before install.
 
 `driver.pteHook` installs a 32-byte constant-return stub in a private executable mapping. `returnConst<T>()` supports integral, enum, pointer, float, and double values; `returnVoid()` emits only a return. Stub starts with a BTI-compatible landing, validates one complete same-page private VMA, and records expected patched bytes. Reinstall, remove, and `clearAll()` refuse to overwrite a changed function.
 
@@ -150,7 +150,7 @@ Runtime-reported on NP05J:
 - `hit_bytes=800` (X0..X30 + Q0..Q31 + fpsr/fpcr)
 - `install_req_bytes=192`
 - `fp_ready=1` — `fpsimd_preserve_current_state` resolved
-- `flags_supported=0xF` — BAIT_GUARD | NOTIFY | CAPTURE_FP | TIMING_BYPASS
+- `flags_supported=0xE` — NOTIFY | CAPTURE_FP | TIMING_BYPASS (BAIT_GUARD flag deprecated, see table above)
 
 ### Verified stealth surface (autonomous `my-driver-test` on kernel 6.6.56-android15-8)
 
@@ -183,9 +183,12 @@ Per-feature runtime confirmation on NP05J (Android 15 / kernel 6.6.56-android15-
 | S13 | PID hide via filldir64 | PASS | child pid vanishes from /proc |
 | S14 | fd-scoped tracker cleanup | PASS | alt fd close reclaims trackers |
 | S15 | fd owner isolation | PASS | two clients on the same (pid, addr) get independent trackers; `clearAll` on one leaves the other alone |
-| S16 | BAIT_GUARD tracker key stable | PASS | install(BAIT_GUARD) followed by remove(addr) succeeds — no hidden address rewrite |
+| S16 | BAIT_GUARD flag now silently ignored | PASS | install with the deprecated flag returns success, tracker key unchanged |
+| S17 | watchpoint one-shot fire | PASS | W-BP on `g_probe_word` records a hit, then auto-disables so a second store records nothing |
+| S18 | legacy GET_HITS refused | PASS | old 0x43 ioctl returns `EPROTO` — stale clients get an authoritative ABI-break signal |
+| S19 | BAIT_GUARD dropped from caps | PASS | `caps.flags_supported` no longer advertises the deprecated bit |
 
-**Summary: 23 PASS / 0 FAIL / 0 SKIP on `android15-6.6` (NP05J).** Every HWBP flag and gate is runtime-verified, plus the two review-driven regressions (fd isolation, tracker-key stability).
+**Summary: 26 PASS / 0 FAIL / 0 SKIP on `android15-6.6` (NP05J).** The suite explicitly covers watchpoint fire+auto-disable (R1), ABI break signalling (R4), deprecated-flag handling (R5), and fd owner cleanup (R7). Signal delivery (R2) is single-target to the group leader — one hit ⇒ one signal, standard Linux convention. Client's `open()` is now HWBP-graceful (R3): kernels without HWBP still open the fd for memory/touch/sensor paths.
 
 ## Layout
 

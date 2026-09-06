@@ -138,6 +138,11 @@ public:
     bool open();
     void close();
     bool isOpen() const { return m_fd >= 0; }
+    /* True when the kernel exposes HWBP and its ABI sizes match this build.
+     * False after a successful open() means memory/touch/sensor still work
+     * but every hwbp.* call will fail — the caller can decide whether to
+     * proceed with a degraded feature set. */
+    bool hwbpAvailable() const { return m_hwbpAvailable; }
     void setTarget(pid_t pid) { m_targetPid = pid; }
     pid_t target() const { return m_targetPid; }
 
@@ -165,6 +170,7 @@ private:
 
     int m_fd = -1;
     pid_t m_targetPid = 0;
+    bool m_hwbpAvailable = false;
 };
 
 extern Driver driver;

@@ -122,6 +122,14 @@ struct hwbp_tracker {
 	int notify_signal;           /* 0 = HWBP_DEFAULT_SIGNAL */
 	u32 notify_in_flight;        /* single outstanding worker */
 	u32 tracker_id;              /* stable id for si_int payload */
+
+	/* Watchpoint one-shot disable (R1). ARM64 arch hw-bp core only auto-steps
+	 * events whose overflow handler is the default; we install a custom one,
+	 * so a watchpoint that fires would re-fire forever on the same access.
+	 * The handler queues a deferred modify_user_hw_breakpoint(disabled=1)
+	 * once per fire (cmpxchg debounces re-entrance). Clients re-arm by
+	 * calling install() again on the same (pid, addr). */
+	u32 wp_disable_pending;
 };
 
 /* Kernel-side default RT signal. 43 is safely past Bionic's reserved window
@@ -143,9 +151,16 @@ struct hwbp_notify_work {
 	int bp_id;
 };
 
+/* Watchpoint one-shot disable — see hwbp_wp_schedule_disable(). */
+struct hwbp_disable_work {
+	struct work_struct work;
+	u32 tracker_id;
+};
+
 /* Forward declarations for helpers used inside the handler. */
 static unsigned long translate_bait(struct mm_struct *mm, unsigned long addr);
 static void hwbp_notify_worker(struct work_struct *w);
+static void hwbp_wp_disable_worker(struct work_struct *w);
 
 static int hwbp_validate_override(const struct drv_hwbp_reg_override *override) {
 	if (!override)
@@ -395,13 +410,31 @@ static void hwbp_maybe_notify(struct hwbp_tracker *tracker) {
 	queue_work(system_wq, &nw->work);
 }
 
-/* Advances execution past the trapped instruction for an execute breakpoint
- * that isn't pass_through: LR-return skips the function body entirely, so the
- * caller resumes as if the target had just returned. Watchpoints do NOT get
- * this treatment — their trap fires in the middle of a data-access sequence
- * and the arm64 debug path handles step-over on its own (bug #1). */
+/* Advances past the trapped instruction for a non-pass_through execute BP by
+ * LR-return — the caller resumes as if the function had returned. Watchpoints
+ * cannot use this path (their trap point is inside a load/store), so R/W/RW
+ * breakpoints get one-shot semantics via hwbp_wp_schedule_disable() below. */
 static void hwbp_execute_lr_return(struct pt_regs *regs) {
 	regs->pc = regs->regs[30];
+}
+
+/* Queues an asynchronous "disable this tracker's perf event" — safe from the
+ * overflow handler's atomic context because modify_user_hw_breakpoint takes a
+ * mutex and can sleep. cmpxchg makes it idempotent per fire so a watchpoint
+ * that traps a handful of times before the worker runs still queues once. */
+static void hwbp_wp_schedule_disable(struct hwbp_tracker *tracker) {
+	struct hwbp_disable_work *dw;
+
+	if (cmpxchg(&tracker->wp_disable_pending, 0u, 1u) != 0u)
+		return;
+	dw = kmalloc(sizeof(*dw), GFP_ATOMIC);
+	if (!dw) {
+		WRITE_ONCE(tracker->wp_disable_pending, 0u);
+		return;
+	}
+	dw->tracker_id = tracker->tracker_id;
+	INIT_WORK(&dw->work, hwbp_wp_disable_worker);
+	queue_work(system_wq, &dw->work);
 }
 
 /* Toggle-forward the execute BP: park it one insn ahead, mark NEXT so the
@@ -417,14 +450,17 @@ static int hwbp_advance_over_insn(struct hwbp_tracker *tracker, struct perf_even
 	return 0;
 }
 
-/* Recovers the target instruction after a gate said "skip". Execute BPs
- * either LR-return (non-pass_through) or advance the BP window
- * (pass_through). Watchpoints don't need either — the arm64 hw_breakpoint
- * core single-steps them for us. */
+/* Recovers execution after a gate said "skip". Execute BPs LR-return or
+ * advance the BP window depending on pass_through. Watchpoints route to the
+ * same async-disable path as the success case — the arm64 core does NOT
+ * auto-single-step our custom overflow handler, so leaving the event armed
+ * loops on the same data access forever (R1). */
 static void hwbp_recover_after_skip(struct hwbp_tracker *tracker, struct perf_event *bp,
                                     struct pt_regs *regs) {
-	if (tracker->bp_type != DRV_HWBP_TYPE_X)
+	if (tracker->bp_type != DRV_HWBP_TYPE_X) {
+		hwbp_wp_schedule_disable(tracker);
 		return;
+	}
 	if (tracker->pass_through)
 		hwbp_advance_over_insn(tracker, bp);
 	else
@@ -500,9 +536,14 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 		hwbp_apply_fp(overrides, count);
 	hwbp_apply_gp(regs, overrides, count);
 
-	/* Watchpoint success: let arm64 debug step over the data access on its own. */
-	if (tracker->bp_type != DRV_HWBP_TYPE_X)
+	/* Watchpoint success: one-shot semantics. We can't LR-return (the trap
+	 * sits mid-load/store) and the arm64 core doesn't auto-step our custom
+	 * overflow handler, so we defer a modify_user_hw_breakpoint(disabled=1).
+	 * Clients re-arm by calling install() on the same (pid, addr). */
+	if (tracker->bp_type != DRV_HWBP_TYPE_X) {
+		hwbp_wp_schedule_disable(tracker);
 		return;
+	}
 
 	if (!tracker->pass_through) {
 		if (!hwbp_overrides_have_pc(overrides, count))
@@ -514,17 +555,20 @@ static void hwbp_handler(struct perf_event *bp, struct perf_sample_data *data, s
 }
 NOKPROBE_SYMBOL(hwbp_handler);
 
-/* Delivers to every thread in the tgid without early break — send_sig_info
- * only queues to the addressed task's private pending, so a blocked leader
- * would otherwise strand the signal (bug #9). Best-case is one delivery per
- * thread; RT-signals dedup naturally at the kernel signalfd layer, and the
- * handler is idempotent w.r.t. si_int (bp_id). */
+/* Delivers one signal to the tgid's group-leader task. Earlier iterations
+ * broke on the first success — that stranded the signal on a blocked leader.
+ * Then we iterated every thread, which fixed strandedness but produced N
+ * queued copies for RT signals (they don't merge in the kernel — review R2).
+ *
+ * Compromise: single delivery to the leader. That's the standard Linux
+ * signal-to-process convention and matches user expectation (one hit → one
+ * signal). Applications that block the signal in the leader thread must
+ * unblock it there — same rule as any RT signal target. */
 static void hwbp_notify_worker(struct work_struct *w) {
 	struct hwbp_notify_work *nw = container_of(w, struct hwbp_notify_work, work);
-	struct task_struct *leader, *t;
+	struct task_struct *leader;
 	struct kernel_siginfo info;
-	int last_rc = -ESRCH;
-	int delivered = 0;
+	int rc = -ESRCH;
 
 	if (!nw->pid)
 		goto out;
@@ -538,18 +582,11 @@ static void hwbp_notify_worker(struct work_struct *w) {
 	if (!leader)
 		leader = get_pid_task(nw->pid, PIDTYPE_PID);
 	if (leader) {
-		rcu_read_lock();
-		for_each_thread(leader, t) {
-			int r = send_sig_info(nw->signal_no, &info, t);
-			last_rc = r;
-			if (r == 0)
-				delivered++;
-		}
-		rcu_read_unlock();
+		rc = send_sig_info(nw->signal_no, &info, leader);
 		put_task_struct(leader);
 	}
-	if (!delivered)
-		LOGW_RL("hwbp: notify deliver sig=%d rc=%d\n", nw->signal_no, last_rc);
+	if (rc)
+		LOGW_RL("hwbp: notify deliver sig=%d rc=%d\n", nw->signal_no, rc);
 
 	/* Best-effort in_flight clear — tracker may already be gone. */
 	{
@@ -567,6 +604,28 @@ static void hwbp_notify_worker(struct work_struct *w) {
 	put_pid(nw->pid);
 out:
 	kfree(nw);
+}
+
+/* Deferred one-shot disable for a watchpoint tracker (R1). Called under the
+ * global mutex so the perf_event pointer we hand to modify_user_hw_breakpoint
+ * can't be freed underneath us. If the tracker was already removed / cleared
+ * we silently skip; the debounce flag is meaningless once the tracker is
+ * gone. */
+static void hwbp_wp_disable_worker(struct work_struct *w) {
+	struct hwbp_disable_work *dw = container_of(w, struct hwbp_disable_work, work);
+	struct hwbp_tracker *tr;
+
+	mutex_lock(&hwbp_mutex);
+	list_for_each_entry(tr, &hwbp_trackers, node) {
+		if (tr->tracker_id != dw->tracker_id)
+			continue;
+		if (tr->bp && !READ_ONCE(tr->orphaned))
+			hwbp_disable_orphaned(tr, tr->bp);
+		WRITE_ONCE(tr->wp_disable_pending, 0u);
+		break;
+	}
+	mutex_unlock(&hwbp_mutex);
+	kfree(dw);
 }
 
 /* fd-scoped lookup — trackers form a (pid, addr, owner_file) key, so two
@@ -741,10 +800,10 @@ static long hwbp_install(void __user *arg, struct file *owner) {
 	if (rc)
 		goto out_put_pid;
 
-	/* BAIT_GUARD is now a metadata-only flag stored on the tracker (bug #11/#12).
-	 * The kernel no longer silently rewrites req.addr — that stranded the client
-	 * with a tracker under a key it couldn't reach. Callers who want the redirect
-	 * invoke TRANSLATE_BAIT first, then install with the resolved address. */
+	/* DRV_HWBP_FLAG_BAIT_GUARD is deprecated and no longer stored on the
+	 * tracker. Its old redirect action is now exposed via the explicit
+	 * DRV_CMD_HWBP_TRANSLATE_BAIT ioctl (see R5). */
+	req.flags &= ~DRV_HWBP_FLAG_BAIT_GUARD;
 
 	rc = hwbp_validate_address(mm, (unsigned long)req.addr, req.bp_type, req.bp_len);
 	if (rc)
@@ -763,7 +822,7 @@ static long hwbp_install(void __user *arg, struct file *owner) {
 	/* Only match against trackers this fd already owns; another client's
 	 * tracker on the same (pid, addr) is left alone and we build our own. */
 	existing = hwbp_lookup_locked(pid_ref, req.addr, owner);
-	if (existing && existing->mm == mm) {
+	if (existing && existing->mm == mm && !READ_ONCE(existing->orphaned)) {
 		if (existing->bp_type != req.bp_type || existing->bp_len != req.bp_len || existing->pass_through != req.pass_through) {
 			rc = -EBUSY;
 		} else {
@@ -776,6 +835,8 @@ static long hwbp_install(void __user *arg, struct file *owner) {
 		goto out_put_task_mm;
 	}
 	if (existing) {
+		/* Also drops orphaned watchpoint trackers (R1) — client re-install
+		 * is the documented re-arm path for one-shot watchpoints. */
 		list_del(&existing->node);
 		hwbp_unregister_and_free(existing);
 	}
@@ -1012,8 +1073,10 @@ static long hwbp_get_caps(void __user *arg) {
 	caps.max_overrides = DRV_HWBP_MAX_OVERRIDES;
 	caps.hit_bytes = sizeof(struct drv_hwbp_hit);
 	caps.install_req_bytes = sizeof(struct drv_hwbp_install_req);
-	caps.flags_supported = DRV_HWBP_FLAG_BAIT_GUARD | DRV_HWBP_FLAG_NOTIFY |
-			       DRV_HWBP_FLAG_CAPTURE_FP | DRV_HWBP_FLAG_TIMING_BYPASS;
+	/* BAIT_GUARD intentionally omitted — the redirect action was removed in R5;
+	 * callers now use DRV_CMD_HWBP_TRANSLATE_BAIT explicitly. */
+	caps.flags_supported = DRV_HWBP_FLAG_NOTIFY | DRV_HWBP_FLAG_CAPTURE_FP |
+			       DRV_HWBP_FLAG_TIMING_BYPASS;
 	caps.fp_ready = hwbp_fp_ready ? 1u : 0u;
 	if (copy_to_user(arg, &caps, sizeof(caps)) != 0)
 		return -EFAULT;
@@ -1322,6 +1385,10 @@ long do_hwbp_cmd(unsigned int cmd, void __user *arg, struct file *owner) {
 	case DRV_CMD_HWBP_SET_OVERRIDE:  return hwbp_set_override(arg, owner);
 	case DRV_CMD_HWBP_REMOVE:        return hwbp_remove(arg, owner);
 	case DRV_CMD_HWBP_GET_HITS:      return hwbp_get_hits(arg, owner);
+	case DRV_CMD_HWBP_GET_HITS_LEGACY:
+		/* Wire-incompatible with the 800-byte hit record — refuse loudly
+		 * so an old client can't silently misinterpret the payload (R4). */
+		return -EPROTO;
 	case DRV_CMD_HWBP_CLEAR_ALL:     return hwbp_clear_all(owner);
 	case DRV_CMD_HWBP_GET_CAPS:      return hwbp_get_caps(arg);
 	case DRV_CMD_HWBP_SET_SAMPLE:    return hwbp_set_sample(arg, owner);
