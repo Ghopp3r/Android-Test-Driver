@@ -5,12 +5,7 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
-/*
- * Auto-generate a debug/release keystore on first build so `assembleRelease`
- * always yields a signed APK that installs without any Google Play interference.
- * Keystore is stored at ../keystore/debug.jks and committed to the tree so
- * every teammate signs with the same key (useful for `adb install -r`).
- */
+// This shared development key is only suitable for the internal test APK.
 val keystoreDir = rootProject.file("keystore")
 val keystoreFile = File(keystoreDir, "debug.jks")
 val keystorePass = "android"
@@ -42,7 +37,6 @@ fun ensureKeystore() {
 android {
     namespace = "com.mydriver.test"
     compileSdk = 35
-    ndkVersion = "29.0.14033849"
 
     defaultConfig {
         applicationId = "com.mydriver.test"
@@ -50,18 +44,8 @@ android {
         targetSdk = 35
         versionCode = 1
         versionName = "1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
-        // arm64 only — matches the driver's AArch64 ABI.
-        ndk {
-            abiFilters += "arm64-v8a"
-        }
-
-        externalNativeBuild {
-            cmake {
-                cppFlags += listOf("-std=c++17", "-fexceptions", "-frtti")
-                arguments += listOf("-DANDROID_STL=c++_static", "-DANDROID_ARM_NEON=TRUE")
-            }
-        }
     }
 
     signingConfigs {
@@ -76,6 +60,7 @@ android {
 
     buildTypes {
         debug {
+            applicationIdSuffix = ".reportcheck"
             signingConfig = signingConfigs.getByName("dev")
             isMinifyEnabled = false
         }
@@ -94,18 +79,7 @@ android {
         jvmTarget = "17"
     }
 
-    externalNativeBuild {
-        cmake {
-            path = file("src/main/cpp/CMakeLists.txt")
-            version = "4.1.1"
-        }
-    }
-
-    packaging {
-        jniLibs {
-            useLegacyPackaging = false
-        }
-    }
+    sourceSets.getByName("androidTest").java.srcDir("src/test/java")
 
     lint {
         abortOnError = false
@@ -118,4 +92,7 @@ dependencies {
     implementation("androidx.appcompat:appcompat:1.7.0")
     implementation("androidx.recyclerview:recyclerview:1.3.2")
     implementation("com.google.android.material:material:1.12.0")
+    testImplementation("junit:junit:4.13.2")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

@@ -82,6 +82,11 @@ __pycache__/
 # Local-only test tools.
 /scripts/
 
+# Android build state belongs to the local checkout.
+apk/.gradle/
+apk/app/.cxx/
+apk/local.properties
+
 # --- On-device diagnostics (kmsg captures, dmesg dumps) --------------------
 diagnostics/*.log
 diagnostics/*.bin
